@@ -1,0 +1,47 @@
+# Build output and tool caches
+/build/
+/coverage/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+pubspec_overrides.yaml
+**/doc/api/
+.widget_preview/
+migrate_working_dir/
+app.*.symbols
+app.*.map.json
+
+# Local Flutter SDK / nuget.exe
+/tools/
+
+# IDEs (shared VS Code settings stay)
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+.history/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs, archives, generated previews and golden failures
+*.log
+*.zip
+*.pyc
+__pycache__/
+_impl_previews/
+**/failures/
+
+# Local machine-specific scripts and secrets
+*.local.ps1
+/scripts/local/
+.env
+.env.*

@@ -1,0 +1,172 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:scglow/core/errors.dart';
+import 'package:scglow/core/json_store.dart';
+import 'package:scglow/core/models.dart';
+import 'package:scglow/player/play_queue.dart';
+import 'package:scglow/player/player_controller.dart';
+
+import 'support/fakes.dart';
+
+PlayerController _player(FakeBackend backend,
+    {Set<int> unplayable = const {},
+    Set<int> knownUnavailable = const {},
+    List<String>? messages,
+    Map<int, Unavailable>? marked,
+    JsonStore? store,
+    void Function()? onExpired}) {
+  return PlayerController(
+    backend: backend,
+    onAuthExpired: onExpired ?? () {},
+    store: store,
+    onMessage: (m) => messages?.add(m),
+    unavailableOf: (t) =>
+        knownUnavailable.contains(t.id) ? Unavailable.removed : marked?[t.id],
+    onUnavailable: (t, r) => marked?[t.id] = r,
+    resolveStream: (t) async {
+      if (unplayable.contains(t.id)) {
+        throw const ScUnplayable('encrypted', Unavailable.goPlusOnly);
+      }
+      return ResolvedStream(url: 'u${t.id}', isPreview: false);
+    },
+  );
+}
+
+void main() {
+  test('unplayable track is skipped, marked and dropped from the queue',
+      () async {
+    final backend = FakeBackend();
+    final marked = <int, Unavailable>{};
+    final player = _player(backend, unplayable: {2}, marked: marked);
+    await player.playTracks([track(1), track(2), track(3)], start: 0);
+    await player.next();
+    expect(backend.opened, ['u1', 'u3']);
+    expect(player.current!.id, 3);
+    expect(marked[2], Unavailable.goPlusOnly);
+    expect(player.queue.items.map((t) => t.id), [1, 3]);
+    await player.previous();
+    expect(player.current!.id, 1);
+  });
+
+  test('known-unavailable rows never enter the queue', () async {
+    final backend = FakeBackend();
+    final player = _player(backend, knownUnavailable: {1, 3});
+    await player.playTracks([track(1), track(2), track(3), track(4)], start: 1);
+    expect(player.queue.items.map((t) => t.id), [2, 4]);
+    expect(backend.opened, ['u2']);
+  });
+
+  test('nothing playable: message, queue untouched', () async {
+    final backend = FakeBackend();
+    final messages = <String>[];
+    final player =
+        _player(backend, knownUnavailable: {7, 8}, messages: messages);
+    await player.playTracks([track(1)], start: 0);
+    await player.playTracks([track(7), track(8)], shuffle: true);
+    expect(messages, ['Nothing playable here']);
+    expect(player.queue.items.map((t) => t.id), [1]);
+  });
+
+  test('whole queue unplayable does not crash', () async {
+    final backend = FakeBackend();
+    final messages = <String>[];
+    final player =
+        _player(backend, unplayable: {1, 2, 3}, messages: messages);
+    await player.playTracks([track(1), track(2), track(3)], start: 0);
+    expect(backend.opened, isEmpty);
+    expect(messages, isNotEmpty);
+  });
+
+  test('auth expiry during resolve calls back instead of failing', () async {
+    var expired = false;
+    final player = PlayerController(
+      backend: FakeBackend(),
+      onAuthExpired: () => expired = true,
+      resolveStream: (t) async => throw const ScAuthExpired(),
+    );
+    await player.playTracks([track(1)], start: 0);
+    expect(expired, isTrue);
+  });
+
+  test('completion: next, repeat one replays, repeat all wraps, off stops',
+      () async {
+    final backend = FakeBackend();
+    final player = _player(backend);
+    await player.playTracks([track(1), track(2)], start: 0);
+    backend.finish();
+    await pump();
+    expect(backend.opened, ['u1', 'u2']);
+
+    player.cycleRepeat();
+    backend.finish();
+    await pump();
+    expect(backend.opened.last, 'u1');
+
+    player.cycleRepeat();
+    expect(player.repeat, LoopMode.one);
+    backend.finish();
+    await pump();
+    expect(backend.opened.length, 3);
+    expect(backend.seeks.last, Duration.zero);
+
+    player.cycleRepeat();
+    await player.next();
+    backend.finish();
+    await pump();
+    expect(player.playing, isFalse);
+    expect(backend.opened.length, 4);
+  });
+
+  test('backend error on start marks the track and moves on', () async {
+    final backend = FakeBackend();
+    final marked = <int, Unavailable>{};
+    final player = _player(backend, marked: marked);
+    await player.playTracks([track(1), track(2)], start: 0);
+    backend.fail('decoder');
+    await pump();
+    expect(marked.keys, [1]);
+    expect(backend.opened.last, 'u2');
+  });
+
+  test('mute zeroes volume and restores it', () async {
+    final backend = FakeBackend();
+    final player = _player(backend);
+    await player.setVolume(40);
+    await player.toggleMute();
+    expect(backend.volume, 0);
+    expect(player.muted, isTrue);
+    await player.toggleMute();
+    expect(backend.volume, 40);
+  });
+
+  test('resume: same track and position after restart', () async {
+    final store = MemoryJsonStore();
+    final b1 = FakeBackend();
+    final p1 = _player(b1, store: store);
+    await p1.playTracks([track(1), track(2), track(3)], start: 1);
+    b1.emitPosition(const Duration(seconds: 42));
+    await pump();
+    p1.cycleRepeat();
+    await p1.save();
+
+    final b2 = FakeBackend();
+    final p2 = _player(b2, store: store);
+    await p2.restore();
+    expect(p2.current!.id, 2);
+    expect(p2.playing, isFalse);
+    expect(p2.position.value, const Duration(seconds: 42));
+    expect(p2.repeat, LoopMode.all);
+    expect(b2.opened, isEmpty);
+    await p2.togglePlay();
+    expect(b2.opened, ['u2']);
+    expect(b2.starts.single, const Duration(seconds: 42));
+  });
+
+  test('clear up next and undo', () async {
+    final player = _player(FakeBackend());
+    await player.playTracks([track(1), track(2), track(3)], start: 0);
+    final removed = player.clearUpNext();
+    expect(player.upNext, isEmpty);
+    player.restoreUpNext(removed);
+    expect(player.upNext.map((t) => t.id), [2, 3]);
+  });
+}
