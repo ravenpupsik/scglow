@@ -8,7 +8,10 @@
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
-FlutterWindow::~FlutterWindow() {}
+// Tear down while the object is whole: the controller's view sends messages to
+// this window as it is destroyed, and member destructors would leave dangling
+// pointers for MessageHandler to use.
+FlutterWindow::~FlutterWindow() { Destroy(); }
 
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
@@ -48,9 +51,7 @@ void FlutterWindow::OnDestroy() {
   if (HWND handle = GetHandle()) single_instance::UntagWindow(handle);
   smtc_ = nullptr;
   tray_ = nullptr;
-  if (flutter_controller_) {
-    flutter_controller_ = nullptr;
-  }
+  flutter_controller_ = nullptr;
 
   Win32Window::OnDestroy();
 }
@@ -85,7 +86,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
 
   switch (message) {
     case WM_FONTCHANGE:
-      flutter_controller_->engine()->ReloadSystemFonts();
+      if (flutter_controller_) {
+        flutter_controller_->engine()->ReloadSystemFonts();
+      }
       break;
   }
 

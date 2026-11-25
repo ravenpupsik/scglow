@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../app/app_services.dart';
+import '../app/update_controller.dart';
+import '../core/update_check.dart';
 import '../app/ui_state.dart';
 import 'cover_scene.dart';
 import 'player_dock.dart';
@@ -132,6 +135,187 @@ class LogoutDialog extends StatelessWidget {
   }
 }
 
+
+Future<void> showUpdateDialog(BuildContext context) async {
+  final app = AppScope.of(context);
+  if (app.updates.offer == null && app.updates.phase == UpdatePhase.idle) {
+    unawaited(app.updates.check());
+  }
+  await showDialog<void>(
+    context: context,
+    barrierColor: AgColors.of(context).scrim,
+    builder: (context) => const UpdateDialog(),
+  );
+}
+
+class UpdateDialog extends StatelessWidget {
+  const UpdateDialog({super.key});
+
+  Future<void> _update(BuildContext context) async {
+    final app = AppScope.of(context);
+    if (app.player.playing) {
+      final ok = await showDialog<bool>(
+        context: context,
+        barrierColor: AgColors.of(context).scrim,
+        builder: (context) => const UpdateConfirmDialog(),
+      );
+      if (ok != true) return;
+    }
+    await app.updates.apply();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = AppScope.of(context);
+    final c = AgColors.of(context);
+    return Center(
+      child: ListenableBuilder(
+        listenable: app.updates,
+        builder: (context, _) {
+          final u = app.updates;
+          final offer = u.offer;
+          final checking = u.phase == UpdatePhase.checking;
+          final busy = u.phase == UpdatePhase.downloading ||
+              u.phase == UpdatePhase.applying;
+          final title = offer == null
+              ? 'Updates'
+              : 'Version ${offer.version.label} available';
+          final body = u.message ??
+              (checking ? 'Checking…' : '');
+          final notes = offer?.notes ?? '';
+          return FrostedGlass(
+            width: 360,
+            radius: Dp.rDialog,
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+            child: Material(
+              type: MaterialType.transparency,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: AgType.ui(16, c.ink, weight: 600)),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Current version ${u.current.label}',
+                    style: AgType.ui(11, c.artist),
+                  ),
+                  if (body.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(body, style: AgType.ui(12, c.ink).copyWith(height: 1.4)),
+                  ],
+                  if (notes.isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 180),
+                      child: SingleChildScrollView(
+                        child: Text(
+                          notes,
+                          style: AgType.ui(11, c.artist).copyWith(height: 1.4),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      SecondaryButton(
+                        label: busy ? 'Working…' : 'Close',
+                        width: 88,
+                        height: Dp.chipH,
+                        fontSize: 12,
+                        weight: 500,
+                        onTap: busy ? null : () => Navigator.of(context).pop(),
+                      ),
+                      if (offer != null && !checking) ...[
+                        const SizedBox(width: 8),
+                        PrimaryButton(
+                          label: busy
+                              ? (u.percent == null
+                                  ? 'Update'
+                                  : '${u.percent}%')
+                              : 'Update',
+                          width: 88,
+                          height: Dp.chipH,
+                          fontSize: 12,
+                          onTap: busy ? null : () => _update(context),
+                        ),
+                      ] else if (u.phase == UpdatePhase.failed ||
+                          (u.phase == UpdatePhase.idle && offer == null)) ...[
+                        const SizedBox(width: 8),
+                        PrimaryButton(
+                          label: checking ? 'Checking…' : 'Check',
+                          width: 88,
+                          height: Dp.chipH,
+                          fontSize: 12,
+                          onTap: checking ? null : () => u.check(),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class UpdateConfirmDialog extends StatelessWidget {
+  const UpdateConfirmDialog({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AgColors.of(context);
+    return Center(
+      child: FrostedGlass(
+        width: 280,
+        radius: Dp.rDialog,
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+        child: Material(
+          type: MaterialType.transparency,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Update now?', style: AgType.ui(16, c.ink, weight: 600)),
+              const SizedBox(height: 8),
+              Text(
+                'A track is playing. Playback will stop while the update is installed.',
+                style: AgType.ui(11, c.artist).copyWith(height: 1.4),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  SecondaryButton(
+                    label: 'Cancel',
+                    width: 80,
+                    height: Dp.chipH,
+                    fontSize: 12,
+                    weight: 500,
+                    onTap: () => Navigator.of(context).pop(false),
+                  ),
+                  const SizedBox(width: 8),
+                  PrimaryButton(
+                    label: 'Update',
+                    width: 80,
+                    height: Dp.chipH,
+                    fontSize: 12,
+                    onTap: () => Navigator.of(context).pop(true),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class SnackbarHost extends StatelessWidget {
   const SnackbarHost({super.key});
 
@@ -200,6 +384,7 @@ class _AppShellState extends State<AppShell>
     with SingleTickerProviderStateMixin {
   CoverScene? _scene;
   AppServices? _app;
+  String? _offered;
   late final AnimationController _anim = AnimationController(
     vsync: this,
     duration: Dp.panelAnim,
@@ -227,9 +412,11 @@ class _AppShellState extends State<AppShell>
     if (app != _app) {
       _app?.panel.removeListener(_sync);
       _app?.player.removeListener(_sync);
+      _app?.updates.onSilentOffer = null;
       _app = app;
       app.panel.addListener(_sync);
       app.player.addListener(_sync);
+      app.updates.onSilentOffer = _onSilentOffer;
       _anim.value = _wantOpen ? 1 : 0;
     }
   }
@@ -249,10 +436,27 @@ class _AppShellState extends State<AppShell>
     }
   }
 
+  void _onSilentOffer(UpdateOffer offer) {
+    if (_offered == offer.version.label) return;
+    _offered = offer.version.label;
+    final app = _app;
+    if (app == null) return;
+    app.messages.show(
+      'Version ${offer.version.label} is available',
+      action: 'Update',
+      onAction: () {
+        app.messages.dismiss();
+        if (!mounted) return;
+        showUpdateDialog(context);
+      },
+    );
+  }
+
   @override
   void dispose() {
     _app?.panel.removeListener(_sync);
     _app?.player.removeListener(_sync);
+    _app?.updates.onSilentOffer = null;
     _anim.dispose();
     _scene?.dispose();
     super.dispose();

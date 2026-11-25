@@ -9,12 +9,26 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app/app_services.dart';
 import 'app/legacy_data.dart';
 import 'app/ui_state.dart';
+import 'core/diag_log.dart';
 import 'selftest.dart';
 import 'ui/app_root.dart';
 import 'ui/theme/tokens.dart';
 
-Future<void> main(List<String> args) async {
+void main(List<String> args) {
+  runZonedGuarded(() => _run(args),
+      (error, stack) => DiagLog.error('zone', error, stack));
+}
+
+Future<void> _run(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  FlutterError.onError = (details) {
+    DiagLog.error('flutter', details.exception, details.stack);
+    FlutterError.presentError(details);
+  };
+  WidgetsBinding.instance.platformDispatcher.onError = (error, stack) {
+    DiagLog.error('platform', error, stack);
+    return true;
+  };
   MediaKit.ensureInitialized();
   if (args.contains('--selftest')) return runSelfTest();
 

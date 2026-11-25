@@ -263,14 +263,14 @@ class Harness {
     final library = LibraryController(
         api: api,
         store: store,
-        onAuthExpired: () {},
+        onAuthProblem: (_, _) {},
         pageDelay: Duration.zero,
         onError: (e) => s.messages.show(e.message));
     backend = FakeBackend();
     final player = PlayerController(
       backend: backend,
       resolveStream: api.resolveStream,
-      onAuthExpired: () {},
+      onAuthProblem: (_, _) {},
       unavailableOf: library.unavailableOf,
       onUnavailable: library.markUnavailable,
       onMessage: (m) => s.messages.show(m),
@@ -279,7 +279,7 @@ class Harness {
       session: session,
       library: library,
       player: player,
-      details: TrackDetailsController(api: api, onAuthExpired: () {}),
+      details: TrackDetailsController(api: api, onAuthProblem: (_, _) {}),
       theme: ThemeController(prefs, mode),
       window: WindowService(enabled: false),
       prefs: prefs,

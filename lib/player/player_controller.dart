@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/diag_log.dart';
 import '../core/errors.dart';
 import '../core/json_store.dart';
 import '../core/models.dart';
@@ -13,17 +15,19 @@ class PlayerController extends ChangeNotifier {
   PlayerController({
     required AudioBackend backend,
     required Future<ResolvedStream> Function(Track track) resolveStream,
-    required this.onAuthExpired,
+    required this.onAuthProblem,
     MediaControls? mediaControls,
     this.unavailableOf,
     this.onUnavailable,
     this.onMessage,
     JsonStore? store,
     PlayQueue? queue,
+    DateTime Function()? clock,
   })  : _backend = backend,
         _resolve = resolveStream,
         _controls = mediaControls,
         _store = store,
+        _clock = clock ?? DateTime.now,
         queue = queue ?? PlayQueue() {
     _subs.addAll([
       _backend.position.listen(_onPosition),
@@ -33,12 +37,19 @@ class PlayerController extends ChangeNotifier {
       _backend.playing.listen((p) {
         if (p == _playing) return;
         _playing = p;
+        _pausedAt = p ? null : _clock();
         _controls?.setPlaying(p);
         _saveSoon();
         notifyListeners();
       }),
       _backend.completed.listen((done) {
-        if (done && current != null && !_loading) _onCompleted();
+        if (!done || current == null || _loading || !_loaded) return;
+        if (_endedEarly()) {
+          _onLoadFailure(
+              'ended at ${_rawPosition.inSeconds}s of ${duration.value.inSeconds}s; ${_cutoffState()}');
+        } else {
+          _onCompleted();
+        }
       }),
       _backend.error.listen(_onBackendError),
     ]);
@@ -49,15 +60,18 @@ class PlayerController extends ChangeNotifier {
 
   static const stateName = 'player_v1';
 
+  static const stalePause = Duration(minutes: 10);
+
   final AudioBackend _backend;
   final Future<ResolvedStream> Function(Track track) _resolve;
   final MediaControls? _controls;
   final JsonStore? _store;
-  final VoidCallback onAuthExpired;
+  final void Function(String source, ScAuthExpired error) onAuthProblem;
   final Unavailable? Function(Track track)? unavailableOf;
   final void Function(Track track, Unavailable reason)? onUnavailable;
   final void Function(String message)? onMessage;
   final PlayQueue queue;
+  final DateTime Function() _clock;
   final List<StreamSubscription<Object?>> _subs = [];
 
   final ValueNotifier<Duration> position = ValueNotifier(Duration.zero);
@@ -71,10 +85,18 @@ class PlayerController extends ChangeNotifier {
   double _volume = 70;
   bool _muted = false;
   Duration? _resumeAt;
+  int? _resumeId;
+  Duration _keepAt = Duration.zero;
   DateTime _lastTick = DateTime.fromMillisecondsSinceEpoch(0);
   Duration _rawPosition = Duration.zero;
   Timer? _saveTimer;
   int _lastSavedSecond = -1;
+  Duration _openedAt = Duration.zero;
+  bool _retried = false;
+  DateTime? _pausedAt;
+  DateTime? _resolvedAt;
+  String? _lastError;
+  DateTime? _lastErrorAt;
 
   Track? get current => queue.current;
   bool get playing => _playing;
@@ -109,26 +131,50 @@ class PlayerController extends ChangeNotifier {
     await _playIndex(queue.index);
   }
 
-  Future<void> _playIndex(int index, {Duration? startAt}) async {
+  Future<void> _playIndex(int index,
+      {Duration? startAt, bool retry = false}) async {
     final request = ++_request;
+    if (!retry) {
+      _retried = false;
+      _keepAt = Duration.zero;
+    }
+    if (startAt == null && !retry) _setResume(null, null);
     queue.jumpTo(index);
     for (var guard = 0; guard < 500; guard++) {
       final track = queue.current;
       if (track == null) break;
+      if (startAt != null &&
+          track.durationMs > 0 &&
+          startAt >= Duration(milliseconds: track.durationMs) - const Duration(seconds: 5)) {
+        startAt = null;
+      }
       _loading = true;
       _loaded = false;
-      position.value = startAt ?? Duration.zero;
+      _rawPosition = startAt ?? Duration.zero;
+      _openedAt = _rawPosition;
+      position.value = _rawPosition;
       duration.value = Duration(milliseconds: track.durationMs);
       notifyListeners();
       try {
         final stream = await _resolve(track);
         if (request != _request) return;
+        _resolvedAt = _clock();
+        _lastError = null;
+        if (startAt != null) {
+          DiagLog.write('player: ${track.id} opening at ${startAt.inSeconds}s with a link resolved now (${describeStreamUrl(stream.url, _clock())})');
+        }
         _isPreview = stream.isPreview || track.isPreviewOnly;
         if (_isPreview) duration.value = const Duration(seconds: 30);
-        await _backend.open(stream.url, start: startAt);
+        final atStart = await _backend.open(stream.url, start: startAt);
+        if (request != _request) return;
+        if (!atStart) {
+          _openedAt = Duration.zero;
+          _rawPosition = Duration.zero;
+          position.value = Duration.zero;
+        }
         await _backend.setVolume(_muted ? 0 : _volume);
         _loaded = true;
-        _resumeAt = null;
+        _setResume(null, null);
         await _controls?.setTrack(track);
         _loading = false;
         _saveSoon();
@@ -151,13 +197,10 @@ class PlayerController extends ChangeNotifier {
         } else {
           queue.jumpTo(i);
         }
-      } on ScAuthExpired {
-        _loading = false;
-        notifyListeners();
-        onAuthExpired();
-        return;
       } on ScException catch (e) {
+        if (e is ScAuthExpired) onAuthProblem('player.resolve', e);
         if (request != _request) return;
+        if (startAt != null) _setResume(track, startAt);
         _loading = false;
         notifyListeners();
         onMessage?.call(friendlyError(e));
@@ -172,14 +215,36 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> playAt(int index) => _playIndex(index);
 
+  // A saved position belongs to one track and is never applied to another.
+  void _setResume(Track? track, Duration? at) {
+    _resumeAt = track == null ? null : at;
+    _resumeId = track?.id;
+  }
+
+  Duration? _resumeFor(Track track) => _resumeId == track.id ? _resumeAt : null;
+
   Future<void> togglePlay() async {
     final track = current;
     if (track == null) return;
     if (!_loaded) {
-      if (!_loading) await _playIndex(queue.index, startAt: _resumeAt);
+      if (!_loading) {
+        final at = _resumeFor(track);
+        await _playIndex(queue.index, startAt: at);
+      }
       return;
     }
-    _playing ? await _backend.pause() : await _backend.play();
+    if (_playing) {
+      await _backend.pause();
+      return;
+    }
+    final since = _pausedAt == null ? null : _clock().difference(_pausedAt!);
+    if (since != null && since >= stalePause) {
+      // Signed stream links expire; reopen at the same spot instead of resuming a dead one.
+      DiagLog.write('player: paused ${since.inMinutes} min, fresh stream for ${track.id}');
+      await _playIndex(queue.index, startAt: _rawPosition);
+      return;
+    }
+    await _backend.play();
   }
 
   Future<void> play() async {
@@ -210,7 +275,8 @@ class PlayerController extends ChangeNotifier {
 
   Future<void> seek(Duration to) async {
     if (!_loaded) {
-      _resumeAt = to;
+      final t = current;
+      if (t != null) _setResume(t, to);
       position.value = to;
       return;
     }
@@ -299,6 +365,7 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _onPosition(Duration p) {
+    if (_loading) return;
     _rawPosition = p;
     final now = DateTime.now();
     if (now.difference(_lastTick) >= const Duration(milliseconds: 80)) {
@@ -331,7 +398,7 @@ class PlayerController extends ChangeNotifier {
     _loading = false;
     _loaded = false;
     _playing = false;
-    _resumeAt = null;
+    _setResume(null, null);
     position.value = Duration.zero;
     _controls?.setPlaying(false);
     _saveSoon();
@@ -353,23 +420,93 @@ class PlayerController extends ChangeNotifier {
     }
   }
 
+  bool _endedEarly() {
+    final d = duration.value;
+    return d > const Duration(seconds: 5) &&
+        _rawPosition < d - const Duration(seconds: 5);
+  }
+
+  String _cutoffState() {
+    final now = _clock();
+    final linkAge = _resolvedAt == null ? '?' : '${now.difference(_resolvedAt!).inSeconds}s';
+    final err = _lastError == null
+        ? 'no backend error'
+        : 'last error ${now.difference(_lastErrorAt!).inSeconds}s ago: $_lastError';
+    return 'opened at ${_openedAt.inSeconds}s, link age $linkAge, playing $_playing, $err';
+  }
+
+  // Host, kind and expiry of a signed stream link; never the path or signature.
+  static String describeStreamUrl(String url, DateTime now) {
+    final u = Uri.tryParse(url);
+    if (u == null || u.host.isEmpty) return 'unparsed link';
+    final kind = u.path.endsWith('.m3u8') || u.path.contains('/playlist')
+        ? 'hls'
+        : 'progressive';
+    int? epoch;
+    final q = u.queryParameters;
+    final expires = q['Expires'] ?? q['expires'];
+    if (expires != null) epoch = int.tryParse(expires);
+    final policy = q['Policy'];
+    if (epoch == null && policy != null) {
+      try {
+        final norm = policy.replaceAll('-', '+').replaceAll('_', '=').replaceAll('~', '/');
+        final text = utf8.decode(base64.decode(base64.normalize(norm)));
+        final m = RegExp(r'"AWS:EpochTime"\s*:\s*(\d+)').firstMatch(text);
+        if (m != null) epoch = int.parse(m.group(1)!);
+      } catch (_) {}
+    }
+    final left = epoch == null
+        ? 'expiry unknown'
+        : 'expires in ${DateTime.fromMillisecondsSinceEpoch(epoch * 1000, isUtc: true).difference(now).inSeconds}s';
+    return '${u.host}, $kind, $left';
+  }
+
   void _onBackendError(String error) {
+    _lastError = _scrubUrls(error);
+    _lastErrorAt = _clock();
     final track = current;
-    if (track == null || _loading) return;
-    debugPrint('Playback error on ${track.id}: $error');
-    if (_rawPosition > const Duration(seconds: 1)) {
+    DiagLog.write('player: backend error on ${track?.id}: ${_scrubUrls(error)}');
+    if (track == null || _loading || !_loaded) return;
+    if (_rawPosition - _openedAt > const Duration(seconds: 1)) {
       onMessage?.call('Playback problem');
       return;
     }
-    onUnavailable?.call(track, Unavailable.removed);
-    final i = queue.index;
-    queue.remove(track.id);
-    if (queue.isEmpty) {
-      _stopAtEnd();
+    _onLoadFailure('backend error');
+  }
+
+  // A stream that fails to start is never a finished or removed track: retry once, then stop in place.
+  void _onLoadFailure(String why) {
+    final track = current;
+    if (track == null) return;
+    final at = _openedAt;
+    if (!_retried) {
+      _retried = true;
+      _keepAt = at;
+      if (at > Duration.zero) {
+        DiagLog.write('player: ${track.id} failed to start at ${at.inSeconds}s ($why); fresh stream from 0, one retry');
+      } else {
+        DiagLog.write('player: ${track.id} failed to start ($why); fresh stream, one retry');
+      }
+      _playIndex(queue.index, retry: true);
       return;
     }
-    _playIndex(i >= queue.items.length ? 0 : i);
+    DiagLog.write('player: ${track.id} failed to start again ($why); stopped');
+    _request++;
+    _backend.stop();
+    _loading = false;
+    _loaded = false;
+    _playing = false;
+    final keep = _keepAt > at ? _keepAt : at;
+    _setResume(track, keep > Duration.zero ? keep : null);
+    position.value = keep;
+    _controls?.setPlaying(false);
+    onMessage?.call(friendlyError(const ScStreamFailed()));
+    _saveSoon();
+    notifyListeners();
   }
+
+  static String _scrubUrls(String text) => DiagLog.scrub(
+      text.replaceAll(RegExp(r'https?://\S+'), '[url]'));
 
   Future<void> restore() async {
     final data = await _store?.read(stateName);
@@ -390,7 +527,7 @@ class PlayerController extends ChangeNotifier {
       final pos = Duration(milliseconds: (data['positionMs'] as int?) ?? 0);
       final cur = queue.current;
       if (cur != null) {
-        _resumeAt = pos;
+        _setResume(cur, pos);
         position.value = pos;
         duration.value = Duration(
             milliseconds: cur.isPreviewOnly ? 30000 : cur.durationMs);

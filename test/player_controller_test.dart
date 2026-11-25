@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:scglow/core/errors.dart';
 import 'package:scglow/core/json_store.dart';
@@ -13,10 +15,10 @@ PlayerController _player(FakeBackend backend,
     List<String>? messages,
     Map<int, Unavailable>? marked,
     JsonStore? store,
-    void Function()? onExpired}) {
+    void Function(String source, ScAuthExpired e)? onAuthProblem}) {
   return PlayerController(
     backend: backend,
-    onAuthExpired: onExpired ?? () {},
+    onAuthProblem: onAuthProblem ?? (_, _) {},
     store: store,
     onMessage: (m) => messages?.add(m),
     unavailableOf: (t) =>
@@ -76,15 +78,19 @@ void main() {
     expect(messages, isNotEmpty);
   });
 
-  test('auth expiry during resolve calls back instead of failing', () async {
-    var expired = false;
+  test('a 401 during resolve is reported to the session and shown as a normal error',
+      () async {
+    final reported = <String>[];
+    final messages = <String>[];
     final player = PlayerController(
       backend: FakeBackend(),
-      onAuthExpired: () => expired = true,
+      onAuthProblem: (source, _) => reported.add(source),
+      onMessage: messages.add,
       resolveStream: (t) async => throw const ScAuthExpired(),
     );
     await player.playTracks([track(1)], start: 0);
-    expect(expired, isTrue);
+    expect(reported, ['player.resolve']);
+    expect(messages, ["Couldn't confirm sign-in"]);
   });
 
   test('completion: next, repeat one replays, repeat all wraps, off stops',
@@ -116,15 +122,131 @@ void main() {
     expect(backend.opened.length, 4);
   });
 
-  test('backend error on start marks the track and moves on', () async {
+  test('backend error on start: one fresh retry, then stop in place without skipping',
+      () async {
     final backend = FakeBackend();
     final marked = <int, Unavailable>{};
-    final player = _player(backend, marked: marked);
+    final messages = <String>[];
+    final player = _player(backend, marked: marked, messages: messages);
     await player.playTracks([track(1), track(2)], start: 0);
     backend.fail('decoder');
     await pump();
-    expect(marked.keys, [1]);
-    expect(backend.opened.last, 'u2');
+    expect(backend.opened, ['u1', 'u1']);
+    backend.fail('decoder');
+    await pump();
+    expect(backend.opened, ['u1', 'u1']);
+    expect(player.current!.id, 1);
+    expect(player.queue.items.map((t) => t.id), [1, 2]);
+    expect(player.playing, isFalse);
+    expect(marked, isEmpty);
+    expect(messages, ["Couldn't load this track"]);
+  });
+
+  test('a stream lookup failure shows an error and keeps the track', () async {
+    final messages = <String>[];
+    final backend = FakeBackend();
+    final player = PlayerController(
+      backend: backend,
+      onAuthProblem: (_, _) {},
+      onMessage: messages.add,
+      resolveStream: (t) async => throw const ScStreamFailed(),
+    );
+    await player.playTracks([track(1), track(2)], start: 0);
+    expect(backend.opened, isEmpty);
+    expect(player.current!.id, 1);
+    expect(messages, ["Couldn't load this track"]);
+  });
+
+  test('completion long before the end counts as a failed start, not as finished',
+      () async {
+    final backend = FakeBackend();
+    final player = _player(backend);
+    await player.playTracks([track(1, ms: 200000), track(2, ms: 200000)], start: 0);
+    backend.emitDuration(const Duration(seconds: 200));
+    await pump();
+    backend.finish();
+    await pump();
+    expect(backend.opened, ['u1', 'u1']);
+    expect(player.current!.id, 1);
+  });
+
+  test('persisted state keeps ids, queue and position but no stream link', () async {
+    final store = MemoryJsonStore();
+    final player = PlayerController(
+      backend: FakeBackend(),
+      onAuthProblem: (_, _) {},
+      store: store,
+      resolveStream: (t) async => const ResolvedStream(
+          url: 'https://cf-hls-media.sndcdn.com/playlist/x.m3u8?Policy=SIGNED',
+          isPreview: false),
+    );
+    final t = Track(
+        id: 7, title: 't7', artist: 'a', durationMs: 200000, trackAuthorization: 'auth-secret');
+    await player.playTracks([t], start: 0);
+    await player.save();
+    final saved = jsonEncode(await store.read(PlayerController.stateName));
+    expect(saved, isNot(contains('Policy=SIGNED')));
+    expect(saved, isNot(contains('sndcdn')));
+    expect(saved, isNot(contains('auth-secret')));
+    expect(saved, contains('"positionMs"'));
+  });
+
+  test('restored track that fails to start keeps its place and saved position', () async {
+    final store = MemoryJsonStore();
+    final b1 = FakeBackend();
+    final first = _player(b1, store: store);
+    await first.playTracks([track(1, ms: 200000), track(2, ms: 200000)], start: 0);
+    b1.emitPosition(const Duration(seconds: 90));
+    await pump();
+    await first.save();
+
+    final b2 = FakeBackend();
+    final messages = <String>[];
+    final p2 = _player(b2, store: store, messages: messages);
+    await p2.restore();
+    expect(b2.opened, isEmpty);
+    await p2.togglePlay();
+    expect(b2.starts.single, const Duration(seconds: 90));
+    b2.fail('open failed');
+    await pump();
+    b2.fail('open failed');
+    await pump();
+    expect(b2.starts, [const Duration(seconds: 90), null]);
+    expect(p2.current!.id, 1);
+    expect(p2.position.value, const Duration(seconds: 90));
+    expect(messages, ["Couldn't load this track"]);
+    await p2.save();
+    expect((await store.read(PlayerController.stateName))!['positionMs'], 90000);
+  });
+
+  test('resume after a long pause opens a fresh stream at the same position', () async {
+    var now = DateTime.utc(2026, 11, 24, 20);
+    final backend = FakeBackend();
+    final player = PlayerController(
+      backend: backend,
+      onAuthProblem: (_, _) {},
+      clock: () => now,
+      resolveStream: (t) async => ResolvedStream(url: 'u${t.id}', isPreview: false),
+    );
+    await player.playTracks([track(1, ms: 200000)], start: 0);
+    backend.emitPosition(const Duration(seconds: 30));
+    await pump();
+    await player.togglePlay();
+    await pump();
+    expect(player.playing, isFalse);
+
+    now = now.add(const Duration(minutes: 2));
+    await player.togglePlay();
+    await pump();
+    expect(backend.opened, ['u1']);
+    await player.togglePlay();
+    await pump();
+
+    now = now.add(PlayerController.stalePause);
+    await player.togglePlay();
+    await pump();
+    expect(backend.opened, ['u1', 'u1']);
+    expect(backend.starts.last, const Duration(seconds: 30));
   });
 
   test('mute zeroes volume and restores it', () async {
@@ -142,7 +264,7 @@ void main() {
     final store = MemoryJsonStore();
     final b1 = FakeBackend();
     final p1 = _player(b1, store: store);
-    await p1.playTracks([track(1), track(2), track(3)], start: 1);
+    await p1.playTracks([track(1, ms: 200000), track(2, ms: 200000), track(3, ms: 200000)], start: 1);
     b1.emitPosition(const Duration(seconds: 42));
     await pump();
     p1.cycleRepeat();

@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../app/app_services.dart';
 import '../app/ui_state.dart';
-import 'shell.dart' show confirmLogout;
+import 'shell.dart' show confirmLogout, showUpdateDialog;
 import 'theme/tokens.dart';
 import 'widgets/art_image.dart';
 import 'widgets/glass.dart';
@@ -341,7 +341,9 @@ class AvatarButton extends StatelessWidget {
       shape: const RoundedRectangleBorder(),
       items: const [AvatarMenu()],
     );
-    if (choice == 'logout' && context.mounted) await confirmLogout(context);
+    if (!context.mounted) return;
+    if (choice == 'logout') await confirmLogout(context);
+    if (choice == 'update' && context.mounted) await showUpdateDialog(context);
   }
 
   @override
@@ -401,12 +403,12 @@ class AvatarMenu extends PopupMenuEntry<String> {
   static const _pad = 6.0;
 
   @override
-  double get height => _pad * 2 + 28 + 3 * 30 + 9 + 36 * 2 + _hintH + 9 + 32;
+  double get height => _pad * 2 + 28 + 3 * 30 + 9 + 36 * 2 + _hintH + 9 + 22 + 32 + 9 + 32;
 
   static const _hintH = 30.0;
 
   @override
-  bool represents(String? value) => value == 'logout';
+  bool represents(String? value) => value == 'logout' || value == 'update';
 
   @override
   State<AvatarMenu> createState() => _AvatarMenuState();
@@ -442,7 +444,7 @@ class _AvatarMenuState extends State<AvatarMenu> {
         horizontal: AvatarMenu._pad,
       ),
       child: ListenableBuilder(
-        listenable: Listenable.merge([app.theme, app.tint, app.pulse]),
+        listenable: Listenable.merge([app.theme, app.tint, app.pulse, app.updates]),
         builder: (context, _) {
           final mode = app.theme.value;
           Widget themeRow(ThemeMode m, String label) => row(
@@ -502,6 +504,33 @@ class _AvatarMenuState extends State<AvatarMenu> {
                     style: AgType.ui(10, c.artist).copyWith(height: 1.3),
                   ),
                 ),
+              ),
+              line(),
+              SizedBox(
+                height: 22,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 10),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Version ${app.updates.current.label}',
+                      style: AgType.ui(12, c.artist, weight: 500),
+                    ),
+                  ),
+                ),
+              ),
+              row(
+                32,
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    app.updates.offer == null
+                        ? 'Check for updates'
+                        : 'Version ${app.updates.offer!.version.label} available…',
+                    style: AgType.ui(13, c.ink, weight: 500),
+                  ),
+                ),
+                () => Navigator.of(context).pop('update'),
               ),
               line(),
               row(

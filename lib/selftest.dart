@@ -43,7 +43,7 @@ Future<void> runSelfTest() async {
       backend: backend,
       resolveStream: api.resolveStream,
       mediaControls: MediaControls(),
-      onAuthExpired: () => write('auth expired (unexpected)'),
+      onAuthProblem: (source, _) => write('auth problem from $source (unexpected)'),
       onMessage: (m) => write('message: $m'),
       onUnavailable: (t, r) => write('unavailable: ${r.label}'),
     );

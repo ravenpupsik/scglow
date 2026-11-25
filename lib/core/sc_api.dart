@@ -199,9 +199,24 @@ class ScApi {
 
   Future<ResolvedStream> resolveStream(Track track) async {
     var t = track;
+    var fresh = false;
     if (t.transcodings.isEmpty || t.trackAuthorization == null) {
       t = await this.track(track.id);
+      fresh = true;
     }
+    final first = await _streamOf(t);
+    if (first != null) return first;
+    // track_authorization from an older listing may have expired; fetch the track once more.
+    if (!fresh) {
+      DiagLog.write('stream lookup failed for ${track.id}; refetching the track once');
+      final again = await _streamOf(await this.track(track.id));
+      if (again != null) return again;
+    }
+    DiagLog.write('stream lookup failed for ${track.id}');
+    throw const ScStreamFailed();
+  }
+
+  Future<ResolvedStream?> _streamOf(Track t) async {
     if (t.isBlocked) {
       throw ScUnplayable('Not available', t.unavailable ?? Unavailable.removed);
     }
@@ -226,7 +241,7 @@ class ScApi {
         continue;
       }
     }
-    throw const ScUnplayable('Stream is not available');
+    return null;
   }
 
   static List<Transcoding> rankTranscodings(List<Transcoding> list) {
@@ -261,7 +276,7 @@ class ScApi {
       };
 
   Future<Object?> _getJson(Uri uri, {bool softFail = false}) async {
-    final res = await _withAuthRetry((id) => _send('GET', uri, id));
+    final res = await _withAuthRetry('GET', uri, (id) => _send('GET', uri, id));
     if (res.statusCode != 200) {
       if (softFail) throw const _SoftFail();
       throw errorForStatus(res.statusCode);
@@ -274,8 +289,8 @@ class ScApi {
   }
 
   Future<void> _write(String method, Uri uri) async {
-    final res =
-        await _withAuthRetry((id) => _send(method, uri, id, write: true));
+    final res = await _withAuthRetry(
+        method, uri, (id) => _send(method, uri, id, write: true));
     if (_ok(res.statusCode)) return;
     // DataDome may block writes with 403; retry once through the signed-in web session.
     final web = _webWriter;
@@ -283,7 +298,10 @@ class ScApi {
       throw errorForStatus(res.statusCode);
     }
     final token = await _readToken();
-    if (token == null || token.isEmpty) throw const ScAuthExpired();
+    if (token == null || token.isEmpty) {
+      throw ScAuthExpired(AuthFailure(
+          method: method, path: uri.path, status: 0, via: 'no token'));
+    }
     final full = await _writeUri(uri, await _clientId.get());
     WebWriteResult r;
     try {
@@ -296,7 +314,16 @@ class ScApi {
     if (_ok(r.status)) return;
     DiagLog.apiFailure(
         method: method, uri: uri, status: r.status, body: r.body, via: 'webview');
-    if (r.status == 401) throw const ScAuthExpired();
+    if (r.status == 401) {
+      throw ScAuthExpired(AuthFailure(
+        method: method,
+        path: uri.path,
+        status: 401,
+        botCheck: looksLikeBotCheck(401, const {}, r.body),
+        excerpt: excerptOf(r.body),
+        via: 'webview',
+      ));
+    }
     throw errorForStatus(r.status == 0 ? res.statusCode : r.status);
   }
 
@@ -306,6 +333,16 @@ class ScApi {
       res.statusCode == 403 &&
       (res.headers.containsKey('x-datadome') ||
           res.body.contains('captcha-delivery.com'));
+
+  // Broader than isBotCheck: used to decide whether a 401 may be DataDome rather than an expired token.
+  static bool looksLikeBotCheck(
+          int status, Map<String, String> headers, String body) =>
+      status == 403 || body.contains('captcha-delivery.com');
+
+  static String excerptOf(String body) {
+    final s = DiagLog.scrub(body);
+    return s.length > 200 ? s.substring(0, 200) : s;
+  }
 
   Future<Uri> _writeUri(Uri uri, String clientId) async {
     final version = await _clientId.appVersion();
@@ -334,13 +371,22 @@ class ScApi {
     if (m != null) _botCookie = m.group(1);
   }
 
-  Future<http.Response> _withAuthRetry(
+  Future<http.Response> _withAuthRetry(String method, Uri uri,
       Future<http.Response> Function(String clientId) send) async {
     var res = await send(await _clientId.get());
-    // A 401 first means a stale client_id; a second one means the token expired.
+    // A 401 first may be a stale client_id; the session decides whether a second one means expiry.
     if (res.statusCode == 401) {
       res = await send(await _clientId.refresh());
-      if (res.statusCode == 401) throw const ScAuthExpired();
+      if (res.statusCode == 401) {
+        throw ScAuthExpired(AuthFailure(
+          method: method,
+          path: uri.path,
+          status: 401,
+          botCheck: looksLikeBotCheck(401, res.headers, res.body),
+          excerpt: excerptOf(res.body),
+          clientIdRefreshed: true,
+        ));
+      }
     }
     return res;
   }

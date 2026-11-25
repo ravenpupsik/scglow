@@ -8,6 +8,7 @@ class FakeBackend implements AudioBackend {
   final starts = <Duration?>[];
   final seeks = <Duration>[];
   double volume = 100;
+  bool resumeWorks = true;
   final _position = StreamController<Duration>.broadcast();
   final _duration = StreamController<Duration>.broadcast();
   final _playing = StreamController<bool>.broadcast();
@@ -30,10 +31,11 @@ class FakeBackend implements AudioBackend {
   @override
   Stream<String> get error => _error.stream;
   @override
-  Future<void> open(String url, {Duration? start, bool play = true}) async {
+  Future<bool> open(String url, {Duration? start, bool play = true}) async {
     opened.add(url);
     starts.add(start);
     _playing.add(true);
+    return start == null || resumeWorks;
   }
 
   @override

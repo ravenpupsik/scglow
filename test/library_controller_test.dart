@@ -95,6 +95,7 @@ void main() {
   late DateTime now;
   Completer<void>? likesGate;
   var likeRequests = 0;
+  late List<String> reports;
 
   LibraryController build() {
     final client = MockClient((r) async {
@@ -118,7 +119,7 @@ void main() {
         minGap: Duration.zero,
       ),
       store: store,
-      onAuthExpired: () {},
+      onAuthProblem: (source, _) => reports.add(source),
       onError: errors.add,
       pageDelay: Duration.zero,
       clock: () => now,
@@ -132,6 +133,7 @@ void main() {
     now = DateTime.utc(2026, 11, 20, 12);
     likesGate = null;
     likeRequests = 0;
+    reports = [];
   });
 
   test('loads all like pages, playlists and fills playlist stubs', () async {
@@ -173,6 +175,21 @@ void main() {
     expect(lib.likedIds.contains(t.id), isTrue);
     expect(errors, hasLength(1));
     expect(sc.writes, ['DELETE /users/5/track_likes/${t.id}']);
+  });
+
+  test('a 401 on unlike is reported to the session, rolled back and shown', () async {
+    final lib = build();
+    await lib.open(5);
+    await lib.refresh();
+    final t = lib.likes.first;
+    sc.likeStatus = 401;
+    expect(await lib.toggleLike(t), isFalse);
+    expect(lib.likedIds.contains(t.id), isTrue);
+    expect(reports, ['library.unlike']);
+    final failure = (errors.single as ScAuthExpired).failure!;
+    expect(failure.status, 401);
+    expect(failure.clientIdRefreshed, isTrue);
+    expect(failure.botCheck, isFalse);
   });
 
   test('re-like after unlike: failed PUT rolls back to unliked', () async {

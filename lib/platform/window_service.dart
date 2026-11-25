@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../core/diag_log.dart';
+
 class WindowService with WindowListener {
   WindowService({this.enabled = true});
 
@@ -15,6 +17,8 @@ class WindowService with WindowListener {
   Future<void> Function()? beforeQuit;
 
   VoidCallback? onFocus;
+
+  VoidCallback? onShown;
 
   Future<void> init({required Color background}) async {
     if (!enabled) return;
@@ -65,12 +69,16 @@ class WindowService with WindowListener {
     await windowManager.show();
     await windowManager.focus();
     active.value = true;
+    onShown?.call();
   }
 
   Future<void> quit() async {
     try {
       await beforeQuit?.call();
-    } catch (_) {}
+    } catch (e, st) {
+      DiagLog.error('quit', e, st);
+    }
+    DiagLog.write('app: quit');
     if (!enabled) return;
     await windowManager.setPreventClose(false);
     await windowManager.destroy();
@@ -99,6 +107,7 @@ class WindowService with WindowListener {
 
   @override
   void onWindowRestore() async {
+    onShown?.call();
     maximized.value = await windowManager.isMaximized();
   }
 }

@@ -28,6 +28,16 @@ class DiagLog {
     write('$method ${uri.path} -> $status [$via] ${scrub(excerpt)}');
   }
 
+  static void error(String source, Object error, StackTrace? stack) {
+    final frames = (stack?.toString() ?? '')
+        .split('\n')
+        .where((l) => l.trim().isNotEmpty)
+        .take(40)
+        .map((l) => '    ${scrub(l)}')
+        .join('\n');
+    write('error ($source): ${scrub('$error')}${frames.isEmpty ? '' : '\n$frames'}');
+  }
+
   static void write(String line) {
     try {
       final f = File(path);

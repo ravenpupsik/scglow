@@ -8,6 +8,13 @@ import 'package:path_provider/path_provider.dart';
 import 'diag_log.dart';
 import 'sc_api.dart';
 
+class WebToken {
+  const WebToken(this.value, {this.expires});
+
+  final String value;
+  final DateTime? expires;
+}
+
 class WebSession implements WebWriter {
   WebViewEnvironment? environment;
 
@@ -42,6 +49,38 @@ class WebSession implements WebWriter {
     return (value == null || value.isEmpty) ? null : value;
   }
 
+  // Opens the full site so its scripts can refresh the session, then reads the oauth_token cookie.
+  Future<WebToken?> loadSiteToken() {
+    final run = _queue.then((_) => _loadSiteTokenNow());
+    _queue = run.then((_) {}, onError: (_) {});
+    return run;
+  }
+
+  Future<WebToken?> _loadSiteTokenNow() async {
+    _idle?.cancel();
+    try {
+      await _close();
+      await _open(soundCloudUrl);
+      await Future<void>.delayed(const Duration(seconds: 3));
+      final cookie =
+          await _cookies.getCookie(url: soundCloudUrl, name: 'oauth_token');
+      final value = cookie?.value?.toString();
+      if (value == null || value.isEmpty) return null;
+      return WebToken(value, expires: cookieExpiry(cookie?.expiresDate));
+    } catch (_) {
+      return null;
+    } finally {
+      _idle = Timer(const Duration(minutes: 3), () => unawaited(_close()));
+    }
+  }
+
+  // WebView2 reports cookie expiry in seconds, other platforms in milliseconds.
+  static DateTime? cookieExpiry(int? raw) {
+    if (raw == null || raw <= 0) return null;
+    final ms = raw < 100000000000 ? raw * 1000 : raw;
+    return DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true);
+  }
+
   static String? tokenFromDocumentCookie(String? documentCookie) {
     if (documentCookie == null) return null;
     for (final part in documentCookie.split(';')) {
@@ -51,6 +90,21 @@ class WebSession implements WebWriter {
       }
     }
     return null;
+  }
+
+  static const _googleBlockSigns = [
+    'disallowed_useragent',
+    '/signin/rejected',
+    'this browser or app may not be secure',
+    'браузер или приложение могут быть небезопасными',
+  ];
+
+  // Google refuses sign-in inside embedded browsers; detect its block page by URL or page text.
+  static bool isGoogleEmbedBlock(String? url, [String? pageText]) {
+    final u = url == null ? null : Uri.tryParse(url);
+    if (u == null || u.host.toLowerCase() != 'accounts.google.com') return false;
+    final hay = '${url!.toLowerCase()}\n${(pageText ?? '').toLowerCase()}';
+    return _googleBlockSigns.any(hay.contains);
   }
 
   Future<String?> readBotCookie() async {
@@ -78,6 +132,26 @@ class WebSession implements WebWriter {
         r = await _fetchFrom(soundCloudUrl, method, url, token);
       }
       return r;
+    } finally {
+      _idle = Timer(const Duration(minutes: 3), () => unawaited(_close()));
+    }
+  }
+
+  // Loads the light page once so DataDome can set a fresh cookie; returns whether one is present.
+  Future<bool> warmUp() {
+    final run = _queue.then((_) => _warmUpNow());
+    _queue = run.then((_) {}, onError: (_) {});
+    return run;
+  }
+
+  Future<bool> _warmUpNow() async {
+    _idle?.cancel();
+    try {
+      await _close();
+      await _open(_lightUrl);
+      return await readBotCookie() != null;
+    } catch (_) {
+      return false;
     } finally {
       _idle = Timer(const Duration(minutes: 3), () => unawaited(_close()));
     }

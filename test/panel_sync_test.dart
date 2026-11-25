@@ -106,6 +106,10 @@ void main() {
     await pv.settle(tester);
     expect(h.services.player.queue.index, afterNext - 1);
     expectInSync(tester, h);
+    final length = Duration(milliseconds: h.services.player.current!.durationMs);
+    h.backend.emitDuration(length);
+    h.backend.emitPosition(length - const Duration(seconds: 1));
+    await pv.settle(tester);
     h.backend.finish();
     await pv.settle(tester);
     expect(h.services.player.queue.index, afterNext);

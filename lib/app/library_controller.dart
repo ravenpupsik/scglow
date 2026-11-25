@@ -14,7 +14,7 @@ class LibraryController extends ChangeNotifier {
   LibraryController({
     required ScApi api,
     required JsonStore store,
-    required this.onAuthExpired,
+    required this.onAuthProblem,
     this.onError,
     this.pageDelay = const Duration(milliseconds: 400),
     DateTime Function()? clock,
@@ -26,7 +26,7 @@ class LibraryController extends ChangeNotifier {
 
   final ScApi _api;
   final JsonStore _store;
-  final VoidCallback onAuthExpired;
+  final void Function(String source, ScAuthExpired error) onAuthProblem;
   final void Function(ScException error)? onError;
   final Duration pageDelay;
   final DateTime Function() _clock;
@@ -217,9 +217,8 @@ class LibraryController extends ChangeNotifier {
         await _fetchPlaylist(p.id, gen);
       }
       await _saveCache();
-    } on ScAuthExpired {
-      onAuthExpired();
     } on ScException catch (e) {
+      if (e is ScAuthExpired) onAuthProblem('library.refresh', e);
       if (gen != _generation) return;
       error = e;
       if (_likes.isEmpty) {
@@ -240,9 +239,8 @@ class LibraryController extends ChangeNotifier {
     try {
       await _fetchPlaylist(id, _generation);
       await _saveCache();
-    } on ScAuthExpired {
-      onAuthExpired();
     } on ScException catch (e) {
+      if (e is ScAuthExpired) onAuthProblem('library.playlist', e);
       onError?.call(e);
     }
   }
@@ -288,10 +286,9 @@ class LibraryController extends ChangeNotifier {
     } on ScException catch (e) {
       _applyLike(track, wasLiked);
       if (e is ScAuthExpired) {
-        onAuthExpired();
-      } else {
-        onError?.call(e);
+        onAuthProblem(wasLiked ? 'library.unlike' : 'library.like', e);
       }
+      onError?.call(e);
       return false;
     }
   }
@@ -381,7 +378,10 @@ class LibraryController extends ChangeNotifier {
       un.forEach((k, v) {
         final reason = Unavailable.values.where((u) => u.name == v).firstOrNull;
         final id = int.tryParse('$k');
-        if (reason != null && id != null) _runtimeUnavailable[id] = reason;
+        // Older builds marked tracks removed after a failed stream start; only Go+ marks are kept.
+        if (reason == Unavailable.goPlusOnly && id != null) {
+          _runtimeUnavailable[id] = Unavailable.goPlusOnly;
+        }
       });
       totalLikes = data['total'] as int?;
       status = _likes.isEmpty && _playlists.isEmpty

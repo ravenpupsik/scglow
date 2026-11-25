@@ -46,6 +46,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::DispatchMessage(&msg);
   }
 
-  ::CoUninitialize();
+  // Quit posts WM_QUIT without destroying the window; destroy it here, rather
+  // than from implicit destructors. This also removes the tray icon and SMTC.
+  window.Destroy();
+  // State is saved and the log flushed by Dart before quitting. Skip DLL
+  // teardown: the WebView plugin's static WinRT objects crash in coremessaging
+  // when released at process exit.
+  ::TerminateProcess(::GetCurrentProcess(), EXIT_SUCCESS);
   return EXIT_SUCCESS;
 }

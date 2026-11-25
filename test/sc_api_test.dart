@@ -273,6 +273,36 @@ void main() {
     expect(stream.url, 'https://cdn/x.m3u8');
   });
 
+  test('stale track_authorization: the track is fetched once more, then the stream opens',
+      () async {
+    final fresh = _trackJson(1)..['track_authorization'] = 'fresh';
+    final api = build((r) {
+      if (r.url.path == '/tracks/1') return http.Response(jsonEncode(fresh), 200);
+      if (r.url.path.startsWith('/media/')) {
+        return r.url.queryParameters['track_authorization'] == 'fresh'
+            ? http.Response(jsonEncode({'url': 'https://cdn/y.m3u8'}), 200)
+            : http.Response('', 403);
+      }
+      return http.Response('', 500);
+    });
+    final stream = await api.resolveStream(Track.fromJson(_trackJson(1)));
+    expect(stream.url, 'https://cdn/y.m3u8');
+    expect(calls.where((c) => c.startsWith('/tracks/1?')), hasLength(1));
+  });
+
+  test('a stream that never resolves is a load failure, not an unplayable track',
+      () async {
+    final api = build((r) {
+      if (r.url.path == '/tracks/1') {
+        return http.Response(jsonEncode(_trackJson(1)), 200);
+      }
+      return http.Response('', 404);
+    });
+    await expectLater(api.resolveStream(Track.fromJson(_trackJson(1))),
+        throwsA(isA<ScStreamFailed>()));
+    expect(friendlyError(const ScStreamFailed()), "Couldn't load this track");
+  });
+
   test('encrypted-only track is unplayable', () async {
     final json = _trackJson(1);
     json['media'] = {

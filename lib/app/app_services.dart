@@ -21,6 +21,7 @@ import '../player/player_controller.dart';
 import '../ui/cover_scene.dart' show WaveformCache;
 import '../ui/widgets/art_image.dart';
 import 'library_controller.dart';
+import 'update_controller.dart';
 import 'session_controller.dart';
 import 'track_details.dart';
 import 'ui_state.dart';
@@ -39,7 +40,13 @@ class AppServices {
     this.onLogout,
     this.waveforms,
     this.waveformUrlOf,
-  });
+    UpdateController? updates,
+  }) : updates = updates ??
+            UpdateController(
+              player: player,
+              window: window,
+              prefs: prefs,
+            );
 
   final SessionController session;
   final LibraryController library;
@@ -60,6 +67,8 @@ class AppServices {
   late final TintController tint = TintController(prefs);
   late final PulseController pulse = PulseController(prefs);
   final Messages messages = Messages();
+
+  final UpdateController updates;
 
   Future<void> logout() async {
     await player.stop();
@@ -122,11 +131,17 @@ class AppServices {
         unawaited(library.refreshOnFocus());
       }
     };
+    window.onShown = () =>
+        unawaited(session.renewFromWeb('window shown', throttled: true));
+    window.active.addListener(() {
+      if (!window.active.value) unawaited(player.save());
+    });
     window.beforeQuit = () async {
       await player.save();
       await player.pause();
       await player.shutdown();
     };
+    if (Platform.isWindows) unawaited(updates.checkSilent());
   }
 
   static Future<AppServices> create(SharedPreferences prefs) async {
@@ -147,14 +162,20 @@ class AppServices {
       readBotCookie: Platform.isWindows ? web.readBotCookie : null,
     );
 
-    final session =
-        SessionController(api: api, tokens: tokens, store: store, web: web);
+    final session = SessionController(
+      api: api,
+      tokens: tokens,
+      store: store,
+      web: web,
+      warmBotCheck: Platform.isWindows ? web.warmUp : null,
+      webToken: Platform.isWindows ? web.loadSiteToken : null,
+    );
     late final AppServices services;
     void message(String text) => services.messages.show(text);
     final library = LibraryController(
       api: api,
       store: store,
-      onAuthExpired: session.handleAuthExpired,
+      onAuthProblem: session.reportAuthProblem,
       onError: (e) => message(friendlyError(e)),
     );
     library.sort = SortPrefs.read(prefs);
@@ -162,24 +183,31 @@ class AppServices {
       backend: MediaKitBackend(),
       resolveStream: api.resolveStream,
       mediaControls: MediaControls(),
-      onAuthExpired: session.handleAuthExpired,
+      onAuthProblem: session.reportAuthProblem,
       unavailableOf: library.unavailableOf,
       onUnavailable: library.markUnavailable,
       onMessage: message,
       store: store,
     );
     final details = TrackDetailsController(
-        api: api, onAuthExpired: session.handleAuthExpired);
+        api: api, onAuthProblem: session.reportAuthProblem);
+    final window = WindowService();
     services = AppServices(
       session: session,
       library: library,
       player: player,
       details: details,
       theme: ThemeController(prefs, ThemeController.read(prefs)),
-      window: WindowService(),
+      window: window,
       web: web,
       tray: TrayService(),
       prefs: prefs,
+      updates: UpdateController(
+        player: player,
+        window: window,
+        prefs: prefs,
+        client: client,
+      ),
       waveforms: WaveformCache((uri) async {
         try {
           final r = await client.get(uri).timeout(const Duration(seconds: 10));

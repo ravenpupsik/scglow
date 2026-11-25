@@ -15,11 +15,11 @@ class TrackDetails {
 }
 
 class TrackDetailsController extends ChangeNotifier {
-  TrackDetailsController({required ScApi api, required this.onAuthExpired})
+  TrackDetailsController({required ScApi api, required this.onAuthProblem})
       : _api = api;
 
   final ScApi _api;
-  final VoidCallback onAuthExpired;
+  final void Function(String source, ScAuthExpired error) onAuthProblem;
   final Map<int, TrackDetails> _cache = {};
 
   TrackDetails of(Track track) {
@@ -46,10 +46,8 @@ class TrackDetailsController extends ChangeNotifier {
       d.comments = await _api.comments(d.track.id);
       notifyListeners();
       d.related = await _api.related(d.track.id);
-    } on ScAuthExpired {
-      onAuthExpired();
-      d.error = const ScAuthExpired();
     } on ScException catch (e) {
+      if (e is ScAuthExpired) onAuthProblem('details.load', e);
       d.error = e;
       d.comments ??= const [];
       d.related ??= const [];

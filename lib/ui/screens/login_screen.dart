@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../../app/app_services.dart';
+import '../../core/diag_log.dart';
 import '../../core/web_session.dart';
 import '../shell.dart';
 import '../theme/tokens.dart';
@@ -136,6 +137,7 @@ class _SignInWebViewState extends State<SignInWebView> {
   Timer? _poll;
   bool _done = false;
   String? _error;
+  bool _googleBlocked = false;
 
   @override
   void initState() {
@@ -167,6 +169,50 @@ class _SignInWebViewState extends State<SignInWebView> {
     _poll?.cancel();
     await widget.onToken(token);
   }
+
+  Future<void> _checkGoogle(InAppWebViewController c, WebUri? url) async {
+    final u = url?.toString();
+    if (_googleBlocked || u == null || !u.contains('accounts.google.com')) return;
+    var blocked = WebSession.isGoogleEmbedBlock(u);
+    if (!blocked) {
+      try {
+        final text = await c.evaluateJavascript(
+            source: "document.body ? document.body.innerText.slice(0, 4000) : ''");
+        blocked = WebSession.isGoogleEmbedBlock(u, text?.toString());
+      } catch (_) {}
+    }
+    if (!blocked || !mounted) return;
+    DiagLog.write('sign-in: Google blocked the embedded browser');
+    setState(() => _googleBlocked = true);
+  }
+
+  void _backToSignIn() {
+    setState(() => _googleBlocked = false);
+    _controller?.loadUrl(urlRequest: URLRequest(url: WebSession.signInUrl));
+  }
+
+  Widget _googleMessage(AgColors c) => Container(
+        color: c.bg,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text("Google sign-in doesn't work inside apps",
+                textAlign: TextAlign.center,
+                style: AgType.ui(22, c.ink, weight: 600)),
+            const SizedBox(height: 10),
+            Text(
+              "On soundcloud.com use 'Forgot password' with your email to set a password, "
+              'then sign in here with email.',
+              textAlign: TextAlign.center,
+              style: AgType.ui(13, c.ink2),
+            ),
+            const SizedBox(height: 22),
+            PrimaryButton(label: 'Back', width: 120, onTap: _backToSignIn),
+          ],
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -207,17 +253,29 @@ class _SignInWebViewState extends State<SignInWebView> {
                     ],
                   ),
                 )
-              : InAppWebView(
-                  webViewEnvironment: widget.web.environment,
-                  initialUrlRequest: URLRequest(url: WebSession.signInUrl),
-                  onWebViewCreated: (ctl) => _controller = ctl,
-                  onLoadStop: (_, _) => _checkToken(),
-                  onUpdateVisitedHistory: (_, _, _) => _checkToken(),
-                  onReceivedError: (_, request, error) {
-                    if (request.isForMainFrame == true && mounted) {
-                      setState(() => _error = 'Could not open SoundCloud.');
-                    }
-                  },
+              : Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    InAppWebView(
+                      webViewEnvironment: widget.web.environment,
+                      initialUrlRequest: URLRequest(url: WebSession.signInUrl),
+                      onWebViewCreated: (ctl) => _controller = ctl,
+                      onLoadStop: (ctl, url) {
+                        _checkToken();
+                        _checkGoogle(ctl, url);
+                      },
+                      onUpdateVisitedHistory: (ctl, url, _) {
+                        _checkToken();
+                        _checkGoogle(ctl, url);
+                      },
+                      onReceivedError: (_, request, error) {
+                        if (request.isForMainFrame == true && mounted) {
+                          setState(() => _error = 'Could not open SoundCloud.');
+                        }
+                      },
+                    ),
+                    if (_googleBlocked) _googleMessage(c),
+                  ],
                 ),
         ),
       ],
