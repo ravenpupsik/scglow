@@ -14,7 +14,9 @@ import 'play_queue.dart';
 class PlayerController extends ChangeNotifier {
   PlayerController({
     required AudioBackend backend,
-    required Future<ResolvedStream> Function(Track track) resolveStream,
+    required Future<ResolvedStream> Function(Track track,
+            {bool preferProgressive})
+        resolveStream,
     required this.onAuthProblem,
     MediaControls? mediaControls,
     this.unavailableOf,
@@ -63,7 +65,8 @@ class PlayerController extends ChangeNotifier {
   static const stalePause = Duration(minutes: 10);
 
   final AudioBackend _backend;
-  final Future<ResolvedStream> Function(Track track) _resolve;
+  final Future<ResolvedStream> Function(Track track, {bool preferProgressive})
+      _resolve;
   final MediaControls? _controls;
   final JsonStore? _store;
   final void Function(String source, ScAuthExpired error) onAuthProblem;
@@ -156,12 +159,20 @@ class PlayerController extends ChangeNotifier {
       duration.value = Duration(milliseconds: track.durationMs);
       notifyListeners();
       try {
-        final stream = await _resolve(track);
+        final resume = startAt != null && startAt > Duration.zero;
+        final stream = await _resolve(track, preferProgressive: resume);
         if (request != _request) return;
         _resolvedAt = _clock();
         _lastError = null;
-        if (startAt != null) {
-          DiagLog.write('player: ${track.id} opening at ${startAt.inSeconds}s with a link resolved now (${describeStreamUrl(stream.url, _clock())})');
+        if (resume) {
+          final kind = stream.protocol.isEmpty
+              ? describeStreamUrl(stream.url, _clock())
+              : stream.protocol;
+          final note = stream.isProgressive
+              ? 'progressive'
+              : 'no progressive stream, $kind';
+          DiagLog.write(
+              'player: ${track.id} opening at ${startAt.inSeconds}s with $note (${describeStreamUrl(stream.url, _clock())})');
         }
         _isPreview = stream.isPreview || track.isPreviewOnly;
         if (_isPreview) duration.value = const Duration(seconds: 30);

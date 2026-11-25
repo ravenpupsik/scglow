@@ -113,6 +113,18 @@ class UpdateController extends ChangeNotifier {
     return result;
   }
 
+  void recoverFailedApply() {
+    final install = _installDir ??
+        (Platform.isWindows ? File(Platform.resolvedExecutable).parent.path : null);
+    if (install == null) return;
+    final stage = Directory('$install${Platform.pathSeparator}.scglow_update');
+    if (!stage.existsSync()) return;
+    _log('previous apply did not run');
+    try {
+      stage.deleteSync(recursive: true);
+    } catch (_) {}
+  }
+
   Future<void> apply() async {
     final next = offer;
     if (next == null || phase == UpdatePhase.downloading || phase == UpdatePhase.applying) {
@@ -175,14 +187,7 @@ class UpdateController extends ChangeNotifier {
       await script.writeAsString(updaterScript, flush: true);
       final backup = Directory('${dir.path}${Platform.pathSeparator}backup');
       final exe = '$install${Platform.pathSeparator}scglow.exe';
-      final args = [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-WindowStyle',
-        'Hidden',
-        '-File',
-        script.path,
+      final updaterArgs = [
         '$pid',
         stage.path,
         install,
@@ -191,9 +196,9 @@ class UpdateController extends ChangeNotifier {
       ];
       final launch = _launchUpdater;
       if (launch != null) {
-        await launch(args);
+        await launch(updaterArgs);
       } else if (Platform.isWindows) {
-        await Process.start('powershell.exe', args, mode: ProcessStartMode.detached);
+        await startWindowsUpdater(scriptPath: script.path, scriptArgs: updaterArgs);
       } else {
         throw const DownloadException('Updates can only be installed on Windows.');
       }
@@ -261,6 +266,51 @@ void unwrapSingleRoot(Directory dest) {
   }
 }
 
+String windowsUpdaterCommand(String scriptPath, List<String> scriptArgs) {
+  String q(String s) => '"${s.replaceAll('"', '\\"')}"';
+  return [
+    'powershell.exe',
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-WindowStyle',
+    'Hidden',
+    '-File',
+    q(scriptPath),
+    ...scriptArgs.map(q),
+  ].join(' ');
+}
+
+// WMI starts the updater outside Flutter's job object, so TerminateProcess on
+// quit does not kill it. Process.start(detached) still stayed in the job.
+Future<void> startWindowsUpdater({
+  required String scriptPath,
+  required List<String> scriptArgs,
+  Future<ProcessResult> Function(String exe, List<String> args)? run,
+}) async {
+  final command = windowsUpdaterCommand(scriptPath, scriptArgs);
+  final wrapped =
+      '\$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create '
+      '-Arguments @{ CommandLine = ${powershellSingleQuote(command)} }; '
+      'if (\$r.ReturnValue -ne 0) { throw "Win32_Process.Create failed: \$(\$r.ReturnValue)" }';
+  final runFn = run ?? Process.run;
+  final result = await runFn('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-Command',
+    wrapped,
+  ]);
+  if (result.exitCode != 0) {
+    final err = result.stderr.toString().trim();
+    throw DownloadException(
+        "Couldn't start the updater${err.isEmpty ? '' : ': $err'}.");
+  }
+}
+
+String powershellSingleQuote(String value) =>
+    "'${value.replaceAll("'", "''")}'";
+
 const updaterScript = r'''
 $ErrorActionPreference = 'Stop'
 $appPid = [int]$args[0]
@@ -268,18 +318,21 @@ $stage  = $args[1]
 $dest   = $args[2]
 $backup = $args[3]
 $exe    = $args[4]
-$log    = Join-Path $env:TEMP 'scglow.log'
+$appLog = Join-Path $env:TEMP 'scglow.log'
+$ownLog = Join-Path $env:TEMP 'scglow_update.log'
 function Write-Log($msg) {
   $line = '{0} update: {1}' -f ([DateTime]::Now.ToString('o')), $msg
-  Add-Content -Path $log -Value $line -ErrorAction SilentlyContinue
+  try { Add-Content -LiteralPath $ownLog -Value $line -ErrorAction SilentlyContinue } catch {}
+  try { Add-Content -LiteralPath $appLog -Value $line -ErrorAction SilentlyContinue } catch {}
 }
+Write-Log ("apply: started, waiting for pid {0}" -f $appPid)
 $deadline = (Get-Date).AddMinutes(2)
 while (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {
   if ((Get-Date) -gt $deadline) { Write-Log 'apply: timed out waiting for the app to exit'; break }
   Start-Sleep -Milliseconds 400
 }
 try {
-  if (Test-Path $backup) { Remove-Item $backup -Recurse -Force }
+  if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $backup | Out-Null
   Get-ChildItem -LiteralPath $dest -Force | Where-Object { $_.Name -ne '.scglow_update' } | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $backup $_.Name) -Recurse -Force
@@ -291,16 +344,16 @@ try {
   Write-Log 'apply: files copied'
 } catch {
   Write-Log ('apply failed, rolling back: ' + $_.Exception.Message)
-  if (Test-Path $backup) {
+  if (Test-Path -LiteralPath $backup) {
     Get-ChildItem -LiteralPath $backup -Force | ForEach-Object {
       Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Recurse -Force -ErrorAction SilentlyContinue
     }
     Write-Log 'apply: rolled back'
   }
-  if (Test-Path $exe) { Start-Process -FilePath $exe }
+  try { if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe } } catch { Write-Log ('apply: relaunch failed: ' + $_.Exception.Message) }
   exit 1
 }
-if (Test-Path $exe) { Start-Process -FilePath $exe }
+try { if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe } } catch { Write-Log ('apply: relaunch failed: ' + $_.Exception.Message) }
 Write-Log 'apply: relaunched'
 Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue

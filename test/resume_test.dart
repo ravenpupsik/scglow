@@ -172,7 +172,7 @@ void main() {
     final player = PlayerController(
       backend: backend,
       onAuthProblem: (_, _) {},
-      resolveStream: (t) async => const ResolvedStream(
+      resolveStream: (t, {bool preferProgressive = false}) async => const ResolvedStream(
           url: 'https://cf-hls-media.sndcdn.com/playlist/x.m3u8?Expires=1&Signature=SIG',
           isPreview: false),
     );
@@ -204,5 +204,5 @@ PlayerController _player(FakeBackend backend,
       onAuthProblem: (_, _) {},
       store: store,
       onMessage: (m) => messages?.add(m),
-      resolveStream: (t) async => ResolvedStream(url: 'u${t.id}', isPreview: false),
+      resolveStream: (t, {bool preferProgressive = false}) async => ResolvedStream(url: 'u${t.id}', isPreview: false),
     );

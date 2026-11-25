@@ -197,30 +197,34 @@ class ScApi {
     return _parse(() => Track.fromJson(json as Map<String, dynamic>));
   }
 
-  Future<ResolvedStream> resolveStream(Track track) async {
+  Future<ResolvedStream> resolveStream(Track track,
+      {bool preferProgressive = false}) async {
     var t = track;
     var fresh = false;
     if (t.transcodings.isEmpty || t.trackAuthorization == null) {
       t = await this.track(track.id);
       fresh = true;
     }
-    final first = await _streamOf(t);
+    final first = await _streamOf(t, preferProgressive: preferProgressive);
     if (first != null) return first;
     // track_authorization from an older listing may have expired; fetch the track once more.
     if (!fresh) {
       DiagLog.write('stream lookup failed for ${track.id}; refetching the track once');
-      final again = await _streamOf(await this.track(track.id));
+      final again = await _streamOf(await this.track(track.id),
+          preferProgressive: preferProgressive);
       if (again != null) return again;
     }
     DiagLog.write('stream lookup failed for ${track.id}');
     throw const ScStreamFailed();
   }
 
-  Future<ResolvedStream?> _streamOf(Track t) async {
+  Future<ResolvedStream?> _streamOf(Track t,
+      {bool preferProgressive = false}) async {
     if (t.isBlocked) {
       throw ScUnplayable('Not available', t.unavailable ?? Unavailable.removed);
     }
-    final candidates = rankTranscodings(t.transcodings);
+    final candidates =
+        rankTranscodings(t.transcodings, preferProgressive: preferProgressive);
     if (candidates.isEmpty) {
       throw const ScUnplayable(
           'Encrypted or no playable stream', Unavailable.goPlusOnly);
@@ -235,7 +239,8 @@ class ScApi {
         final json = await _getJson(uri, softFail: true);
         final url = (json as Map?)?['url'];
         if (url is String && url.isNotEmpty) {
-          return ResolvedStream(url: url, isPreview: c.snipped);
+          return ResolvedStream(
+              url: url, isPreview: c.snipped, protocol: c.protocol);
         }
       } on _SoftFail {
         continue;
@@ -244,12 +249,16 @@ class ScApi {
     return null;
   }
 
-  static List<Transcoding> rankTranscodings(List<Transcoding> list) {
+  static List<Transcoding> rankTranscodings(List<Transcoding> list,
+      {bool preferProgressive = false}) {
     int score(Transcoding t) {
       final mime = t.mimeType.toLowerCase();
       final base = switch (t.protocol) {
-        'hls' when mime.contains('mp4a') || mime.contains('aac') => 0,
-        'hls' when mime.startsWith('audio/mpeg') && !mime.contains('mpegurl') => 1,
+        'progressive' when preferProgressive => 0,
+        'hls' when mime.contains('mp4a') || mime.contains('aac') =>
+          preferProgressive ? 1 : 0,
+        'hls' when mime.startsWith('audio/mpeg') && !mime.contains('mpegurl') =>
+          preferProgressive ? 2 : 1,
         'progressive' => 2,
         'hls' => 3,
         _ => 99,

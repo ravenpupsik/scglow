@@ -24,7 +24,7 @@ PlayerController _player(FakeBackend backend,
     unavailableOf: (t) =>
         knownUnavailable.contains(t.id) ? Unavailable.removed : marked?[t.id],
     onUnavailable: (t, r) => marked?[t.id] = r,
-    resolveStream: (t) async {
+    resolveStream: (t, {bool preferProgressive = false}) async {
       if (unplayable.contains(t.id)) {
         throw const ScUnplayable('encrypted', Unavailable.goPlusOnly);
       }
@@ -86,7 +86,7 @@ void main() {
       backend: FakeBackend(),
       onAuthProblem: (source, _) => reported.add(source),
       onMessage: messages.add,
-      resolveStream: (t) async => throw const ScAuthExpired(),
+      resolveStream: (t, {bool preferProgressive = false}) async => throw const ScAuthExpired(),
     );
     await player.playTracks([track(1)], start: 0);
     expect(reported, ['player.resolve']);
@@ -149,7 +149,7 @@ void main() {
       backend: backend,
       onAuthProblem: (_, _) {},
       onMessage: messages.add,
-      resolveStream: (t) async => throw const ScStreamFailed(),
+      resolveStream: (t, {bool preferProgressive = false}) async => throw const ScStreamFailed(),
     );
     await player.playTracks([track(1), track(2)], start: 0);
     expect(backend.opened, isEmpty);
@@ -176,7 +176,7 @@ void main() {
       backend: FakeBackend(),
       onAuthProblem: (_, _) {},
       store: store,
-      resolveStream: (t) async => const ResolvedStream(
+      resolveStream: (t, {bool preferProgressive = false}) async => const ResolvedStream(
           url: 'https://cf-hls-media.sndcdn.com/playlist/x.m3u8?Policy=SIGNED',
           isPreview: false),
     );
@@ -226,7 +226,7 @@ void main() {
       backend: backend,
       onAuthProblem: (_, _) {},
       clock: () => now,
-      resolveStream: (t) async => ResolvedStream(url: 'u${t.id}', isPreview: false),
+      resolveStream: (t, {bool preferProgressive = false}) async => ResolvedStream(url: 'u${t.id}', isPreview: false),
     );
     await player.playTracks([track(1, ms: 200000)], start: 0);
     backend.emitPosition(const Duration(seconds: 30));

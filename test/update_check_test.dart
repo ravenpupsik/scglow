@@ -10,6 +10,7 @@ import 'package:scglow/core/app_version.dart';
 import 'package:scglow/core/models.dart';
 import 'package:scglow/core/update_check.dart';
 import 'package:scglow/app/update_controller.dart';
+import 'package:scglow/core/diag_log.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/fakes.dart';
@@ -270,7 +271,7 @@ void main() {
       final c = UpdateController(
         player: PlayerController(
           backend: FakeBackend(),
-          resolveStream: (t) async => const ResolvedStream(url: 'u', isPreview: false),
+          resolveStream: (t, {bool preferProgressive = false}) async => const ResolvedStream(url: 'u', isPreview: false),
           onAuthProblem: (_, _) {},
         ),
         window: WindowService(enabled: false),
@@ -292,5 +293,69 @@ void main() {
     expect(cut.length, lessThan(long.length));
     expect(cut, endsWith('…'));
     expect(cut, isNot(contains('line 199')));
+  });
+
+
+  test('updater command quotes paths with spaces', () {
+    final cmd = windowsUpdaterCommand(
+      r'C:\Users\me\AppData\Local\Temp\scglow update\apply.ps1',
+      [
+        '1234',
+        r'C:\Users\me\OneDrive\Desktop\Release\.scglow_update',
+        r'C:\Users\me\OneDrive\Desktop\Release',
+        r'C:\Temp\backup',
+        r'C:\Users\me\OneDrive\Desktop\Release\scglow.exe',
+      ],
+    );
+    expect(cmd, isNot(contains('Win32_Process')));
+    expect(cmd, startsWith('powershell.exe '));
+    expect(cmd, contains('-ExecutionPolicy Bypass'));
+    expect(cmd, contains('-File "C:\\Users\\me\\AppData\\Local\\Temp\\scglow update\\apply.ps1"'));
+    expect(cmd, contains('"C:\\Users\\me\\OneDrive\\Desktop\\Release"'));
+  });
+
+  test('the updater is started through WMI so it outlives TerminateProcess', () async {
+    late String exe;
+    late List<String> args;
+    await startWindowsUpdater(
+      scriptPath: r'C:\Temp\apply.ps1',
+      scriptArgs: ['9', r'C:\Stage', r'C:\Dest', r'C:\Backup', r'C:\Dest\scglow.exe'],
+      run: (e, a) async {
+        exe = e;
+        args = a;
+        return ProcessResult(0, 0, '', '');
+      },
+    );
+    expect(exe, 'powershell.exe');
+    expect(args, contains('-Command'));
+    final command = args.last;
+    expect(command, contains('Win32_Process'));
+    expect(command, contains('Create'));
+    expect(command, contains('apply.ps1'));
+  });
+
+  test('leftover staging is logged and removed', () {
+    final dir = Directory.systemTemp.createTempSync('upd3');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final stage = Directory('${dir.path}${Platform.pathSeparator}.scglow_update')
+      ..createSync();
+    File('${stage.path}${Platform.pathSeparator}x').writeAsStringSync('y');
+    final logDir = Directory.systemTemp.createTempSync('upd3log');
+    addTearDown(() => logDir.deleteSync(recursive: true));
+    DiagLog.pathOverride = '${logDir.path}/scglow.log';
+    final c = UpdateController(
+      player: PlayerController(
+        backend: FakeBackend(),
+        resolveStream: (t, {bool preferProgressive = false}) async =>
+            const ResolvedStream(url: 'u', isPreview: false),
+        onAuthProblem: (_, _) {},
+      ),
+      window: WindowService(enabled: false),
+      installDir: dir.path,
+    );
+    c.recoverFailedApply();
+    expect(stage.existsSync(), isFalse);
+    expect(File(DiagLog.path).readAsStringSync(), contains('previous apply did not run'));
+    DiagLog.pathOverride = null;
   });
 }

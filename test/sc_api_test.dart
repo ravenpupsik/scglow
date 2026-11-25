@@ -258,6 +258,27 @@ void main() {
       'progressive audio/mpeg',
       'hls audio/mpegurl',
     ]);
+    final resume = ScApi.rankTranscodings(ranked, preferProgressive: true);
+    expect(resume.first.protocol, 'progressive');
+  });
+
+  test('resolveStream prefers a progressive transcoding when asked', () async {
+    final api = build((r) {
+      if (r.url.path.contains('/media/prog')) {
+        return http.Response(jsonEncode({'url': 'https://cdn/x.mp3'}), 200);
+      }
+      if (r.url.path.contains('/media/aac')) {
+        return http.Response(jsonEncode({'url': 'https://cdn/x.m3u8'}), 200);
+      }
+      return http.Response('', 500);
+    });
+    final track = Track.fromJson(_trackJson(1));
+    final hls = await api.resolveStream(track);
+    expect(hls.protocol, 'hls');
+    expect(hls.url, 'https://cdn/x.m3u8');
+    final prog = await api.resolveStream(track, preferProgressive: true);
+    expect(prog.protocol, 'progressive');
+    expect(prog.url, 'https://cdn/x.mp3');
   });
 
   test('resolveStream falls back to the next transcoding', () async {
@@ -377,6 +398,10 @@ Map<String, dynamic> _trackJson(int id) => {
           {
             'url': 'https://api-v2.soundcloud.com/media/mp3',
             'format': {'protocol': 'hls', 'mime_type': 'audio/mpeg'}
+          },
+          {
+            'url': 'https://api-v2.soundcloud.com/media/prog',
+            'format': {'protocol': 'progressive', 'mime_type': 'audio/mpeg'}
           },
         ]
       },

@@ -28,6 +28,7 @@ class MediaKitBackend implements AudioBackend {
   final Player _player;
   double _volume = 100;
   int _opens = 0;
+  bool _seekableReady = false;
 
   Player get rawPlayer => _player;
 
@@ -42,9 +43,24 @@ class MediaKitBackend implements AudioBackend {
   @override
   Stream<String> get error => _player.stream.error;
 
+  Future<void> _enableSeekable() async {
+    if (_seekableReady) return;
+    final platform = _player.platform;
+    try {
+      // ignore: avoid_dynamic_calls
+      await (platform as dynamic).setProperty('force-seekable', 'yes');
+      await (platform as dynamic).setProperty('cache', 'yes');
+      await (platform as dynamic).setProperty('demuxer-seekable-cache', 'yes');
+      await (platform as dynamic).setProperty('hr-seek', 'yes');
+      _seekableReady = true;
+      DiagLog.write('player: mpv seekable cache enabled');
+    } catch (_) {}
+  }
+
   @override
   Future<bool> open(String url, {Duration? start, bool play = true}) async {
     final id = ++_opens;
+    await _enableSeekable();
     if (start == null || start <= const Duration(seconds: 1)) {
       await _player.open(Media(url), play: play);
       return true;

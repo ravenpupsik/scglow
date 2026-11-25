@@ -32,7 +32,7 @@ After `flutter build windows --release`:
 powershell -ExecutionPolicy Bypass -File .\tool\package_release.ps1
 ```
 
-This writes `release\scglow-windows-<version>.zip` and `release\scglow-windows-<version>.zip.sha256`. Create a GitHub Release tagged `v<version>` (for example `v1.6.4+26`) and attach both files. The in-app updater reads the latest release, prefers the asset's SHA-256 `digest` when GitHub provides one, and otherwise uses the `.sha256` file. A release without a checksum is refused.
+This writes `release\scglow-windows-<version>.zip` and `release\scglow-windows-<version>.zip.sha256`. Create a GitHub Release tagged `v<version>` (for example `v1.6.4+28`) and attach both files. The in-app updater reads the latest release, prefers the asset's SHA-256 `digest` when GitHub provides one, and otherwise uses the `.sha256` file. A release without a checksum is refused.
 
 ## Build
 

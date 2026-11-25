@@ -141,7 +141,10 @@ class AppServices {
       await player.pause();
       await player.shutdown();
     };
-    if (Platform.isWindows) unawaited(updates.checkSilent());
+    if (Platform.isWindows) {
+      updates.recoverFailedApply();
+      unawaited(updates.checkSilent());
+    }
   }
 
   static Future<AppServices> create(SharedPreferences prefs) async {

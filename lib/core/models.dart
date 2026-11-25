@@ -323,8 +323,15 @@ class TrackComment {
 }
 
 class ResolvedStream {
-  const ResolvedStream({required this.url, required this.isPreview});
+  const ResolvedStream({
+    required this.url,
+    required this.isPreview,
+    this.protocol = '',
+  });
 
   final String url;
   final bool isPreview;
+  final String protocol;
+
+  bool get isProgressive => protocol == 'progressive';
 }
