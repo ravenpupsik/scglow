@@ -2,7 +2,7 @@ class AppVersion implements Comparable<AppVersion> {
   const AppVersion(this.major, this.minor, this.patch, [this.build = 0]);
 
   // Keep in lockstep with pubspec.yaml when bumping the version.
-  static const current = AppVersion(1, 6, 4, 28);
+  static const current = AppVersion(1, 6, 4, 30);
 
   final int major;
   final int minor;

@@ -358,4 +358,58 @@ void main() {
     expect(File(DiagLog.path).readAsStringSync(), contains('previous apply did not run'));
     DiagLog.pathOverride = null;
   });
+
+
+  test('updater script merge-copies folders and verifies exe and app.so', () {
+    expect(updaterScript, contains('function Copy-Merge'));
+    expect(updaterScript, contains(r"data\app.so"));
+    expect(updaterScript, contains('Get-FileHash'));
+    expect(updaterScript, contains("apply: verify failed"));
+    expect(
+      updaterScript,
+      isNot(contains(
+        r"Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Recurse -Force",
+      )),
+    );
+    expect(
+      updaterScript,
+      isNot(contains(
+        r"Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $backup $_.Name) -Recurse -Force",
+      )),
+    );
+    expect(updaterScript, contains(r'Copy-Merge $_.FullName (Join-Path $dest $_.Name)'));
+    expect(updaterScript, contains(r'Copy-Merge $_.FullName (Join-Path $backup $_.Name)'));
+  });
+
+  test('a nested data folder left by a bad apply is logged and removed', () {
+    final dir = Directory.systemTemp.createTempSync('upd4');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final nested = Directory(
+        '${dir.path}${Platform.pathSeparator}data${Platform.pathSeparator}data')
+      ..createSync(recursive: true);
+    File('${nested.path}${Platform.pathSeparator}app.so').writeAsStringSync('nested');
+    final realSo = File(
+        '${dir.path}${Platform.pathSeparator}data${Platform.pathSeparator}app.so')
+      ..writeAsStringSync('real');
+    final logDir = Directory.systemTemp.createTempSync('upd4log');
+    addTearDown(() => logDir.deleteSync(recursive: true));
+    DiagLog.pathOverride = '${logDir.path}/scglow.log';
+    final c = UpdateController(
+      player: PlayerController(
+        backend: FakeBackend(),
+        resolveStream: (t, {bool preferProgressive = false}) async =>
+            const ResolvedStream(url: 'u', isPreview: false),
+        onAuthProblem: (_, _) {},
+      ),
+      window: WindowService(enabled: false),
+      installDir: dir.path,
+    );
+    c.recoverFailedApply();
+    expect(nested.existsSync(), isFalse);
+    expect(realSo.existsSync(), isTrue);
+    expect(realSo.readAsStringSync(), 'real');
+    expect(File(DiagLog.path).readAsStringSync(),
+        contains('removed nested data folder'));
+    DiagLog.pathOverride = null;
+  });
 }

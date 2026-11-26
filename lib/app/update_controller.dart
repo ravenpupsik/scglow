@@ -117,11 +117,19 @@ class UpdateController extends ChangeNotifier {
     final install = _installDir ??
         (Platform.isWindows ? File(Platform.resolvedExecutable).parent.path : null);
     if (install == null) return;
-    final stage = Directory('$install${Platform.pathSeparator}.scglow_update');
-    if (!stage.existsSync()) return;
-    _log('previous apply did not run');
+    final sep = Platform.pathSeparator;
+    final stage = Directory('$install$sep.scglow_update');
+    if (stage.existsSync()) {
+      _log('previous apply did not run');
+      try {
+        stage.deleteSync(recursive: true);
+      } catch (_) {}
+    }
+    final nested = Directory('$install${sep}data${sep}data');
+    if (!nested.existsSync()) return;
+    _log('removed nested data folder');
     try {
-      stage.deleteSync(recursive: true);
+      nested.deleteSync(recursive: true);
     } catch (_) {}
   }
 
@@ -325,6 +333,49 @@ function Write-Log($msg) {
   try { Add-Content -LiteralPath $ownLog -Value $line -ErrorAction SilentlyContinue } catch {}
   try { Add-Content -LiteralPath $appLog -Value $line -ErrorAction SilentlyContinue } catch {}
 }
+# Copy a file, or merge a directory's contents into an existing destination
+# (Copy-Item -Recurse of a folder into an existing folder nests it: data\data).
+function Copy-Merge($src, $dst) {
+  if (Test-Path -LiteralPath $src -PathType Container) {
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Get-ChildItem -LiteralPath $src -Force | ForEach-Object {
+      Copy-Merge $_.FullName (Join-Path $dst $_.Name)
+    }
+  } else {
+    $parent = Split-Path -Parent $dst
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+      New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    Copy-Item -LiteralPath $src -Destination $dst -Force
+  }
+}
+function Test-SameFile($left, $right) {
+  if (-not (Test-Path -LiteralPath $left) -or -not (Test-Path -LiteralPath $right)) { return $false }
+  $a = Get-Item -LiteralPath $left
+  $b = Get-Item -LiteralPath $right
+  if ($a.Length -ne $b.Length) { return $false }
+  $ha = (Get-FileHash -LiteralPath $left -Algorithm SHA256).Hash
+  $hb = (Get-FileHash -LiteralPath $right -Algorithm SHA256).Hash
+  return [bool]($ha -eq $hb)
+}
+function Test-Applied {
+  $exeSrc = Join-Path $stage 'scglow.exe'
+  if ((Test-Path -LiteralPath $exeSrc) -and -not (Test-SameFile $exeSrc $exe)) { return $false }
+  $soSrc = Join-Path $stage 'data\app.so'
+  $soDst = Join-Path $dest 'data\app.so'
+  if ((Test-Path -LiteralPath $soSrc) -and -not (Test-SameFile $soSrc $soDst)) { return $false }
+  return $true
+}
+function Restore-Backup {
+  if (-not (Test-Path -LiteralPath $backup)) { return }
+  Get-ChildItem -LiteralPath $backup -Force | ForEach-Object {
+    Copy-Merge $_.FullName (Join-Path $dest $_.Name)
+  }
+  Write-Log 'apply: rolled back'
+}
+function Start-App {
+  try { if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe } } catch { Write-Log ('apply: relaunch failed: ' + $_.Exception.Message) }
+}
 Write-Log ("apply: started, waiting for pid {0}" -f $appPid)
 $deadline = (Get-Date).AddMinutes(2)
 while (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {
@@ -335,25 +386,26 @@ try {
   if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
   New-Item -ItemType Directory -Force -Path $backup | Out-Null
   Get-ChildItem -LiteralPath $dest -Force | Where-Object { $_.Name -ne '.scglow_update' } | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $backup $_.Name) -Recurse -Force
+    Copy-Merge $_.FullName (Join-Path $backup $_.Name)
   }
   Write-Log 'apply: backup ready'
   Get-ChildItem -LiteralPath $stage -Force | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Recurse -Force
+    Copy-Merge $_.FullName (Join-Path $dest $_.Name)
   }
   Write-Log 'apply: files copied'
+  if (-not (Test-Applied)) {
+    Write-Log 'apply: verify failed'
+    Restore-Backup
+    Start-App
+    exit 1
+  }
 } catch {
   Write-Log ('apply failed, rolling back: ' + $_.Exception.Message)
-  if (Test-Path -LiteralPath $backup) {
-    Get-ChildItem -LiteralPath $backup -Force | ForEach-Object {
-      Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Write-Log 'apply: rolled back'
-  }
-  try { if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe } } catch { Write-Log ('apply: relaunch failed: ' + $_.Exception.Message) }
+  try { Restore-Backup } catch { Write-Log ('apply: rollback failed: ' + $_.Exception.Message) }
+  Start-App
   exit 1
 }
-try { if (Test-Path -LiteralPath $exe) { Start-Process -FilePath $exe } } catch { Write-Log ('apply: relaunch failed: ' + $_.Exception.Message) }
+Start-App
 Write-Log 'apply: relaunched'
 Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
