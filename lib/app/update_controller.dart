@@ -25,8 +25,12 @@ class UpdateController extends ChangeNotifier {
     Future<Directory> Function()? tempDir,
     String? installDir,
     Future<void> Function(List<String> args)? launchUpdater,
+    Future<void> Function(String setup, List<String> args)? launchSetup,
+    bool? windows,
     this.onSilentOffer,
   })  : _prefs = prefs,
+        _launchSetup = launchSetup,
+        _windows = windows ?? Platform.isWindows,
         _client = client ?? http.Client(),
         current = current,
         _clock = clock ?? DateTime.now,
@@ -35,6 +39,7 @@ class UpdateController extends ChangeNotifier {
         _launchUpdater = launchUpdater;
 
   static const lastCheckKey = 'update_last_check';
+  static const migrationKey = 'installer_migration_attempt';
 
   final PlayerController player;
   final WindowService window;
@@ -45,6 +50,8 @@ class UpdateController extends ChangeNotifier {
   final Future<Directory> Function()? _tempDir;
   final String? _installDir;
   final Future<void> Function(List<String> args)? _launchUpdater;
+  final Future<void> Function(String setup, List<String> args)? _launchSetup;
+  final bool _windows;
   void Function(UpdateOffer offer)? onSilentOffer;
 
   UpdatePhase phase = UpdatePhase.idle;
@@ -113,9 +120,63 @@ class UpdateController extends ChangeNotifier {
     return result;
   }
 
+  String? get installDir => _installDir ??
+      (_windows ? File(Platform.resolvedExecutable).parent.path : null);
+
+  bool get isInstalledCopy {
+    final dir = installDir;
+    return dir != null && File('$dir${Platform.pathSeparator}$installerMarker').existsSync();
+  }
+
+  void logStartup() {
+    final dir = installDir;
+    if (dir == null) return;
+    DiagLog.write('app: start ${current.label} '
+        '(${isInstalledCopy ? 'installed' : 'portable'}) in $dir');
+  }
+
+  // A portable copy (zip, or updated by the old zip updater) moves itself to the
+  // installer once per version; returns true when the setup was started.
+  Future<bool> migrateToInstaller() async {
+    final dir = installDir;
+    if (dir == null) return false;
+    final blocker = installerMigrationBlocker(
+      installDir: dir,
+      installed: isInstalledCopy,
+      attempted: _prefs?.getString(migrationKey),
+      current: current,
+    );
+    if (blocker != null) {
+      if (!isInstalledCopy) _log('installer: not moving ($blocker)');
+      return false;
+    }
+    await _prefs?.setString(migrationKey, current.label);
+    final result = await checkLatestRelease(
+      client: _client,
+      current: current,
+      allowSameVersion: true,
+      installerOnly: true,
+    );
+    final next = result.offer;
+    if (next == null || !next.isInstaller) {
+      _log('installer: no setup in the latest release'
+          '${result.error == null ? '' : ' (${result.error})'}');
+      return false;
+    }
+    _log('installer: portable copy in $dir, installing ${next.version.label}');
+    offer = next;
+    phase = UpdatePhase.ready;
+    notifyListeners();
+    await apply();
+    final started = phase == UpdatePhase.applying;
+    // Retry on the next start when the download or launch failed; once the
+    // setup ran, a failed install must not loop on every start.
+    if (!started) await _prefs?.remove(migrationKey);
+    return started;
+  }
+
   void recoverFailedApply() {
-    final install = _installDir ??
-        (Platform.isWindows ? File(Platform.resolvedExecutable).parent.path : null);
+    final install = installDir;
     if (install == null) return;
     final sep = Platform.pathSeparator;
     final stage = Directory('$install$sep.scglow_update');
@@ -185,6 +246,10 @@ class UpdateController extends ChangeNotifier {
     phase = UpdatePhase.applying;
     message = 'Installing…';
     notifyListeners();
+    if (next.isInstaller) {
+      await _runSetup(zip, dir);
+      return;
+    }
     try {
       await player.save();
       final install = _installDir ?? File(Platform.resolvedExecutable).parent.path;
@@ -221,6 +286,36 @@ class UpdateController extends ChangeNotifier {
       phase = UpdatePhase.failed;
       message = "Couldn't install the update.";
       _log('apply failed: ${e.runtimeType}');
+      notifyListeners();
+    }
+  }
+
+  Future<void> _runSetup(File setup, Directory dir) async {
+    try {
+      await player.save();
+      final args = windowsSetupArgs(
+        waitPid: pid,
+        logPath: '${dir.path}${Platform.pathSeparator}setup.log',
+      );
+      final launch = _launchSetup;
+      if (launch != null) {
+        await launch(setup.path, args);
+      } else if (_windows) {
+        await startHiddenWindowsProcess(windowsCommandLine(setup.path, args));
+      } else {
+        throw const DownloadException('Updates can only be installed on Windows.');
+      }
+      _log('setup launched, quitting');
+      await window.quit();
+    } on DownloadException catch (e) {
+      phase = UpdatePhase.failed;
+      message = e.message;
+      _log('setup failed: ${e.message}');
+      notifyListeners();
+    } catch (e) {
+      phase = UpdatePhase.failed;
+      message = "Couldn't start the installer.";
+      _log('setup failed: ${e.runtimeType}');
       notifyListeners();
     }
   }
@@ -274,6 +369,47 @@ void unwrapSingleRoot(Directory dest) {
   }
 }
 
+const installerMarker = 'scglow.installed';
+
+// Why a portable copy should not move to the installer, or null when it should.
+String? installerMigrationBlocker({
+  required String installDir,
+  required bool installed,
+  required String? attempted,
+  required AppVersion current,
+}) {
+  if (installed) return 'installed copy';
+  final path = installDir.replaceAll('/', r'\').toLowerCase();
+  if (path.contains(r'\build\windows\')) return 'development build';
+  if (attempted == current.label) return 'already tried for ${current.label}';
+  return null;
+}
+
+List<String> windowsSetupArgs({required int waitPid, required String logPath}) => [
+      '/VERYSILENT',
+      '/SUPPRESSMSGBOXES',
+      '/NORESTART',
+      '/NOCANCEL',
+      '/SP-',
+      '/CLOSEAPPLICATIONS',
+      '/WAITPID=$waitPid',
+      '/RELAUNCH=1',
+      '/LOG=$logPath',
+    ];
+
+String windowsCommandLine(String exe, List<String> args) {
+  String q(String s) => '"${s.replaceAll('"', '\\"')}"';
+  // Inno Setup reads /NAME=value switches whole, so quote only the value part.
+  String arg(String a) {
+    if (!a.startsWith('/')) return q(a);
+    final eq = a.indexOf('=');
+    if (eq < 0 || !a.contains(' ')) return a;
+    return '${a.substring(0, eq + 1)}${q(a.substring(eq + 1))}';
+  }
+
+  return [q(exe), ...args.map(arg)].join(' ');
+}
+
 String windowsUpdaterCommand(String scriptPath, List<String> scriptArgs) {
   String q(String s) => '"${s.replaceAll('"', '\\"')}"';
   return [
@@ -289,21 +425,33 @@ String windowsUpdaterCommand(String scriptPath, List<String> scriptArgs) {
   ].join(' ');
 }
 
-// WMI starts the updater outside Flutter's job object, so TerminateProcess on
-// quit does not kill it. Process.start(detached) still stayed in the job.
 Future<void> startWindowsUpdater({
   required String scriptPath,
   required List<String> scriptArgs,
   Future<ProcessResult> Function(String exe, List<String> args)? run,
+}) =>
+    startHiddenWindowsProcess(windowsUpdaterCommand(scriptPath, scriptArgs), run: run);
+
+// WMI starts the process outside Flutter's job object, so TerminateProcess on
+// quit does not kill it (Process.start(detached) stayed in the job), and
+// ShowWindow=0 keeps any console hidden. The launcher itself runs detached so
+// it gets no console window either.
+Future<void> startHiddenWindowsProcess(
+  String commandLine, {
+  Future<ProcessResult> Function(String exe, List<String> args)? run,
 }) async {
-  final command = windowsUpdaterCommand(scriptPath, scriptArgs);
   final wrapped =
+      '\$si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly '
+      '-Property @{ ShowWindow = [uint16]0 }; '
       '\$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create '
-      '-Arguments @{ CommandLine = ${powershellSingleQuote(command)} }; '
-      'if (\$r.ReturnValue -ne 0) { throw "Win32_Process.Create failed: \$(\$r.ReturnValue)" }';
-  final runFn = run ?? Process.run;
+      '-Arguments @{ CommandLine = ${powershellSingleQuote(commandLine)}; '
+      'ProcessStartupInformation = [CimInstance]\$si }; '
+      'if (\$r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create failed: \$(\$r.ReturnValue)"); exit 1 }; '
+      '"started \$(\$r.ProcessId)"';
+  final runFn = run ?? _runDetached;
   final result = await runFn('powershell.exe', [
     '-NoProfile',
+    '-NonInteractive',
     '-ExecutionPolicy',
     'Bypass',
     '-Command',
@@ -314,6 +462,18 @@ Future<void> startWindowsUpdater({
     throw DownloadException(
         "Couldn't start the updater${err.isEmpty ? '' : ': $err'}.");
   }
+  DiagLog.write('update: ${result.stdout.toString().trim()}');
+}
+
+// detachedWithStdio has no exit code, so success is the "started" line.
+Future<ProcessResult> _runDetached(String exe, List<String> args) async {
+  final p = await Process.start(exe, args, mode: ProcessStartMode.detachedWithStdio);
+  final out = p.stdout.transform(const SystemEncoding().decoder).join();
+  final err = p.stderr.transform(const SystemEncoding().decoder).join();
+  final stdout = await out.timeout(const Duration(seconds: 60), onTimeout: () => '');
+  final stderr = await err.timeout(const Duration(seconds: 5), onTimeout: () => '');
+  final ok = RegExp(r'^started \d+', multiLine: true).hasMatch(stdout);
+  return ProcessResult(p.pid, ok ? 0 : 1, stdout, ok || stderr.isNotEmpty ? stderr : 'no response');
 }
 
 String powershellSingleQuote(String value) =>

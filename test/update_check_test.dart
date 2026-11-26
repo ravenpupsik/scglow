@@ -412,4 +412,173 @@ void main() {
         contains('removed nested data folder'));
     DiagLog.pathOverride = null;
   });
+
+
+  group('installer', () {
+    const setupSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    Map<String, dynamic> both(String tag, String label) => _release(tag: tag, assets: [
+          {
+            'name': 'scglow-windows-$label.zip',
+            'browser_download_url': 'https://example/scglow-windows-$label.zip',
+            'digest': 'sha256:${'a' * 64}',
+          },
+          {
+            'name': 'scglow-setup-$label.exe',
+            'browser_download_url': 'https://example/scglow-setup-$label.exe',
+            'digest': 'sha256:$setupSha',
+          },
+        ]);
+
+    test('the setup is preferred over the zip; a zip-only release still works', () {
+      const current = AppVersion(1, 6, 5, 31);
+      final offer = offerFromRelease(
+          GithubRelease.fromJson(both('v1.6.5+32', '1.6.5+32')), current)!;
+      expect(offer.assetName, 'scglow-setup-1.6.5+32.exe');
+      expect(offer.isInstaller, isTrue);
+      expect(offer.sha256, setupSha);
+      final zipOnly = offerFromRelease(GithubRelease.fromJson(_release()), current)!;
+      expect(zipOnly.assetName, 'scglow-windows-1.7.0.zip');
+      expect(zipOnly.isInstaller, isFalse);
+    });
+
+    test('the same version is offered only for a setup when asked', () async {
+      const current = AppVersion(1, 6, 5, 31);
+      final same = MockClient((req) async =>
+          http.Response(jsonEncode(both('v1.6.5+31', '1.6.5+31')), 200));
+      expect((await checkLatestRelease(client: same, current: current)).isLatest, isTrue);
+      final r = await checkLatestRelease(
+          client: same, current: current, allowSameVersion: true, installerOnly: true);
+      expect(r.offer?.assetName, 'scglow-setup-1.6.5+31.exe');
+      final zipOnly = MockClient((req) async => http.Response(
+          jsonEncode(_release(tag: 'v1.6.5+31', assets: [
+            {
+              'name': 'scglow-windows-1.6.5+31.zip',
+              'browser_download_url': 'https://example/z.zip',
+              'digest': 'sha256:${'a' * 64}',
+            }
+          ])),
+          200));
+      final none = await checkLatestRelease(
+          client: zipOnly, current: current, allowSameVersion: true, installerOnly: true);
+      expect(none.isLatest, isTrue);
+    });
+
+    test('setup runs silently, waits for the app and relaunches it', () {
+      final args = windowsSetupArgs(
+          waitPid: 4321, logPath: r'C:\Users\Some One\AppData\Local\Temp\scglow_update\setup.log');
+      expect(args, containsAll(['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/WAITPID=4321', '/RELAUNCH=1']));
+      final cmd = windowsCommandLine(r'C:\Users\Some One\Temp\scglow-setup-1.6.5+31.exe', args);
+      expect(cmd, startsWith(r'"C:\Users\Some One\Temp\scglow-setup-1.6.5+31.exe" /VERYSILENT'));
+      expect(cmd, contains(r'/LOG="C:\Users\Some One\AppData\Local\Temp\scglow_update\setup.log"'));
+      expect(cmd, contains(' /WAITPID=4321 '));
+    });
+
+    test('processes are started hidden through WMI', () async {
+      late List<String> args;
+      await startHiddenWindowsProcess('"C:\\x\\setup.exe" /VERYSILENT', run: (e, a) async {
+        args = a;
+        return ProcessResult(0, 0, 'started 77', '');
+      });
+      final command = args.last;
+      expect(command, contains('Win32_ProcessStartup'));
+      expect(command, contains('ShowWindow = [uint16]0'));
+      expect(command, contains('ProcessStartupInformation'));
+      expect(command, contains('Win32_Process -MethodName Create'));
+      await expectLater(
+        startHiddenWindowsProcess('x', run: (e, a) async => ProcessResult(0, 1, '', 'denied')),
+        throwsA(isA<DownloadException>()),
+      );
+    });
+
+    test('only a portable non-development copy moves to the installer, once per version', () {
+      const v = AppVersion(1, 6, 5, 31);
+      expect(installerMigrationBlocker(
+          installDir: r'C:\Users\me\Downloads\scglow-windows-1.6.4+28',
+          installed: false, attempted: null, current: v), isNull);
+      expect(installerMigrationBlocker(
+          installDir: r'C:\Users\me\AppData\Local\Programs\scglow',
+          installed: true, attempted: null, current: v), 'installed copy');
+      expect(installerMigrationBlocker(
+          installDir: r'D:\androidproject\scdesk\build\windows\x64\runner\Release',
+          installed: false, attempted: null, current: v), 'development build');
+      expect(installerMigrationBlocker(
+          installDir: r'C:\portable', installed: false, attempted: '1.6.5+31', current: v),
+          contains('already tried'));
+      expect(installerMigrationBlocker(
+          installDir: r'C:\portable', installed: false, attempted: '1.6.5+30', current: v), isNull);
+    });
+
+    test('a portable copy downloads, verifies and starts the setup, then quits', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final dir = Directory.systemTemp.createTempSync('upd5');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final install = Directory('${dir.path}${Platform.pathSeparator}portable')..createSync();
+      final work = Directory('${dir.path}${Platform.pathSeparator}work');
+      final body = utf8.encode('fake setup');
+      final sha = sha256OfBytes(body);
+      final release = _release(tag: 'v1.6.5+31', assets: [
+        {
+          'name': 'scglow-setup-1.6.5+31.exe',
+          'browser_download_url': 'https://example/scglow-setup-1.6.5+31.exe',
+          'digest': 'sha256:$sha',
+        }
+      ]);
+      final client = MockClient((req) async => req.url.path.endsWith('.exe')
+          ? http.Response.bytes(body, 200)
+          : http.Response(jsonEncode(release), 200));
+      String? setupPath;
+      List<String>? setupArgs;
+      var quit = false;
+      final window = WindowService(enabled: false)..beforeQuit = () async => quit = true;
+      final c = UpdateController(
+        player: PlayerController(
+          backend: FakeBackend(),
+          resolveStream: (t, {bool preferProgressive = false}) async =>
+              const ResolvedStream(url: 'u', isPreview: false),
+          onAuthProblem: (_, _) {},
+        ),
+        window: window,
+        prefs: prefs,
+        client: client,
+        current: const AppVersion(1, 6, 5, 31),
+        installDir: install.path,
+        tempDir: () async => work,
+        windows: true,
+        launchSetup: (path, args) async {
+          setupPath = path;
+          setupArgs = args;
+        },
+      );
+      expect(c.isInstalledCopy, isFalse);
+      expect(await c.migrateToInstaller(), isTrue);
+      expect(setupPath, endsWith('scglow-setup-1.6.5+31.exe'));
+      expect(File(setupPath!).readAsBytesSync(), body);
+      expect(setupArgs, contains('/WAITPID=$pid'));
+      expect(quit, isTrue);
+      expect(prefs.getString(UpdateController.migrationKey), '1.6.5+31');
+      // Second start of the same version does not try again.
+      quit = false;
+      expect(await c.migrateToInstaller(), isFalse);
+      expect(quit, isFalse);
+      // An installed copy never migrates.
+      File('${install.path}${Platform.pathSeparator}$installerMarker').writeAsStringSync('1.6.5+31');
+      expect(c.isInstalledCopy, isTrue);
+    });
+  });
+
+  test('installer script keeps AppId, per-user install and data prompt', () {
+    final iss = File('installer/installer.iss').readAsStringSync();
+    expect(iss, contains('AppId={{C674E000-9041-45CB-B4FE-0AADB09D6D33}'));
+    expect(iss, contains('PrivilegesRequired=lowest'));
+    expect(iss, contains(r'DefaultDirName={localappdata}\Programs\scglow'));
+    expect(iss, contains('OutputBaseFilename=scglow-setup-{#AppVersion}'));
+    expect(iss, contains('MB_DEFBUTTON2'));
+    expect(iss, contains('scglow.installed'));
+    expect(iss, contains('{param:WAITPID|0}'));
+    expect(iss, contains('{param:RELAUNCH|0}'));
+    final identity = File('windows/runner/app_identity.h').readAsStringSync();
+    final aumid = RegExp(r'#define AppUserModelId "([^"]+)"').firstMatch(iss)!.group(1)!;
+    expect(identity, contains('L"$aumid"'));
+  });
 }

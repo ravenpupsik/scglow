@@ -82,6 +82,8 @@ class UpdateOffer {
   final String assetUrl;
   final String sha256;
   final String? checksumUrl;
+
+  bool get isInstaller => assetName.toLowerCase().endsWith('.exe');
 }
 
 class UpdateCheckResult {
@@ -144,12 +146,13 @@ Future<String> sha256OfFile(File file) async {
   return digest.toString();
 }
 
-// Picks the Windows zip that matches the tag and a SHA-256 from the digest or a .sha256 asset.
+// Picks the Windows setup (or, for older releases, the zip) that matches the tag and a SHA-256 from the digest or a .sha256 asset.
 UpdateOffer? offerFromRelease(GithubRelease release, AppVersion current) {
   final version = AppVersion.tryParse(release.tag);
   if (version == null) return null;
   if (version.compareTo(current) <= 0) return null;
-  final zip = selectWindowsZip(release.assets, version);
+  final zip = selectWindowsSetup(release.assets, version) ??
+      selectWindowsZip(release.assets, version);
   if (zip == null) return null;
   final digest = sha256FromDigest(zip.digest);
   if (digest != null) {
@@ -198,6 +201,21 @@ ReleaseAsset? selectWindowsZip(List<ReleaseAsset> assets, AppVersion version) {
   }).firstOrNull ?? (any.length == 1 ? any.first : null);
 }
 
+ReleaseAsset? selectWindowsSetup(List<ReleaseAsset> assets, AppVersion version) {
+  final labels = {version.label, '${version.major}.${version.minor}.${version.patch}'};
+  bool isSetup(ReleaseAsset a) {
+    final n = a.name.toLowerCase();
+    return n.startsWith('scglow-setup') && n.endsWith('.exe');
+  }
+  for (final v in labels) {
+    final want = 'scglow-setup-$v.exe'.toLowerCase();
+    final hit = assets.where((a) => isSetup(a) && a.name.toLowerCase() == want).firstOrNull;
+    if (hit != null) return hit;
+  }
+  final any = assets.where(isSetup).toList();
+  return any.length == 1 ? any.first : null;
+}
+
 ReleaseAsset? selectChecksumAsset(List<ReleaseAsset> assets, String zipName) {
   final want = {
     '$zipName.sha256'.toLowerCase(),
@@ -210,6 +228,8 @@ Future<UpdateCheckResult> checkLatestRelease({
   required http.Client client,
   AppVersion current = AppVersion.current,
   Uri? url,
+  bool allowSameVersion = false,
+  bool installerOnly = false,
 }) async {
   http.Response res;
   try {
@@ -254,11 +274,14 @@ Future<UpdateCheckResult> checkLatestRelease({
   if (version == null) {
     return const UpdateCheckResult.failed("Couldn't read the latest version.");
   }
-  if (version.compareTo(current) <= 0) {
+  final cmp = version.compareTo(current);
+  if (cmp < 0 || (cmp == 0 && !allowSameVersion)) {
     return UpdateCheckResult.latest(release.tag);
   }
-  final zip = selectWindowsZip(release.assets, version);
+  final zip = selectWindowsSetup(release.assets, version) ??
+      (installerOnly ? null : selectWindowsZip(release.assets, version));
   if (zip == null) {
+    if (installerOnly) return UpdateCheckResult.latest(release.tag);
     return const UpdateCheckResult.failed(
         'A newer version is out, but no Windows package was attached.');
   }

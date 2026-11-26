@@ -62,7 +62,26 @@ bool ShortcutIsCurrent(IShellLinkW* link, IPersistFile* file,
   return same;
 }
 
+bool HasInstallMarker(const std::wstring& exe) {
+  const std::wstring marker = DirOf(exe) + L"\\scglow.installed";
+  return ::GetFileAttributesW(marker.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+// True when the loaded shortcut already points at an installed copy, which a
+// portable copy must not take over.
+bool PointsToInstalledCopy(IShellLinkW* link) {
+  wchar_t target[MAX_PATH * 2] = {0};
+  if (FAILED(link->GetPath(target, ARRAYSIZE(target), nullptr, 0)) ||
+      target[0] == L'\0') {
+    return false;
+  }
+  return ::GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES &&
+         HasInstallMarker(target);
+}
+
 void EnsureStartMenuShortcut(const std::wstring& exe) {
+  // The installer owns the shortcuts of an installed copy.
+  if (HasInstallMarker(exe)) return;
   PWSTR programs = nullptr;
   if (FAILED(::SHGetKnownFolderPath(FOLDERID_Programs, 0, nullptr,
                                     &programs))) {
@@ -78,7 +97,8 @@ void EnsureStartMenuShortcut(const std::wstring& exe) {
   }
   IPersistFile* file = nullptr;
   if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&file)))) {
-    if (!ShortcutIsCurrent(link, file, lnk, exe)) {
+    if (!ShortcutIsCurrent(link, file, lnk, exe) &&
+        !PointsToInstalledCopy(link)) {
       link->SetPath(exe.c_str());
       link->SetWorkingDirectory(DirOf(exe).c_str());
       link->SetIconLocation(exe.c_str(), 0);

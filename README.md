@@ -20,19 +20,29 @@ A personal desktop SoundCloud client for Windows, built with Flutter.
 - Glass UI in dark and light themes. The current cover is shown as a soft blurred backdrop that can pulse to the beat (based on the track's waveform).
 - Windows integration: media keys and the system media overlay, a tray icon, and a single running instance.
 
-## Download
+## Install
 
-Get `scglow-windows-<version>.zip` from [Releases](https://github.com/ravenpupsik/scglow/releases), unzip it anywhere and run `scglow.exe` (Windows 10/11, x64). Older releases used the name `scglow-<version>-windows-x64.zip`; both still work.
+Get `scglow-setup-<version>.exe` from [Releases](https://github.com/ravenpupsik/scglow/releases) and run it (Windows 10/11, x64). It installs for your user only, without admin rights, into `%LOCALAPPDATA%\Programs\scglow`, adds a Start menu shortcut (a desktop shortcut is optional) and an entry in Windows Settings > Apps for uninstalling. If the Microsoft Edge WebView2 Runtime (needed for sign-in) is missing, setup downloads and installs it.
+
+Updates: account menu > Check for updates downloads the new setup, checks its SHA-256 and installs it silently, then restarts scglow.
+
+Your sign-in, settings and cache live in `%APPDATA%\scglow`, not in the program folder, so they survive updates and reinstalls. Uninstalling asks whether to delete them (default: keep).
+
+A portable `scglow-windows-<version>.zip` is still attached for older versions of the app. A portable copy of 1.6.5 or newer moves itself to the installer once: on start it downloads the setup of the latest release, installs it and starts the installed copy. Setup also points existing scglow shortcuts at the installed copy. The old folder can be deleted afterwards.
 
 ## Publishing a release
 
-After `flutter build windows --release`:
+Requirements: everything under [Build](#build), plus [Inno Setup 6.3+](https://jrsoftware.org/isdl.php).
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tool\package_release.ps1
+powershell -ExecutionPolicy Bypass -File .\tool\build_release.ps1
 ```
 
-This writes `release\scglow-windows-<version>.zip` and `release\scglow-windows-<version>.zip.sha256`. Create a GitHub Release tagged `v<version>` (for example `v1.6.4+30`) and attach both files. The in-app updater reads the latest release, prefers the asset's SHA-256 `digest` when GitHub provides one, and otherwise uses the `.sha256` file. A release without a checksum is refused.
+This runs `flutter build windows --release`, compiles `installer\installer.iss` with the version from `pubspec.yaml` (keep `lib/core/app_version.dart` in sync), and writes to `dist\`: `scglow-setup-<version>.exe`, `scglow-windows-<version>.zip` and a `.sha256` file for each. Create a GitHub Release tagged `v<version>` and attach all four. The in-app updater reads the latest release, prefers the setup over the zip, prefers the asset's SHA-256 `digest` when GitHub provides one, and otherwise uses the `.sha256` file. A release without a checksum is refused.
+
+The installer's `AppId` (in `installer\installer.iss`) must never change, or new versions install next to the old one. Do not change `CompanyName` or `ProductName` in `windows\runner\Runner.rc` either: they decide the `%APPDATA%` data folder.
+
+The MSVC runtime (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`) is copied next to `scglow.exe` by the CMake install step, so no VC++ Redistributable is needed.
 
 ## Build
 

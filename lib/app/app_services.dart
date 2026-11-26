@@ -143,7 +143,10 @@ class AppServices {
     };
     if (Platform.isWindows) {
       updates.recoverFailedApply();
-      unawaited(updates.checkSilent());
+      updates.logStartup();
+      unawaited(() async {
+        if (!await updates.migrateToInstaller()) await updates.checkSilent();
+      }());
     }
   }
 

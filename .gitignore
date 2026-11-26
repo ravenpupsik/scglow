@@ -1,5 +1,7 @@
 # Build output and tool caches
 /build/
+/dist/
+/release/
 /coverage/
 .dart_tool/
 .flutter-plugins
