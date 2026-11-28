@@ -253,8 +253,19 @@ class AppScope extends InheritedWidget {
   static AppServices of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<AppScope>()!.services;
 
+  static AppServices? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<AppScope>()?.services;
+
   @override
   bool updateShouldNotify(AppScope oldWidget) => services != oldWidget.services;
+}
+
+// Double-clicking a track row: the first click already started it, so open
+// Focus once it is the current track.
+void openFocusFor(BuildContext context, Track track) {
+  final app = AppScope.maybeOf(context);
+  if (app == null || app.player.current?.id != track.id) return;
+  app.focus.enter();
 }
 
 extension TrackListX on List<Track> {

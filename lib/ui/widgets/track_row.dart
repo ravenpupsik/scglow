@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../app/app_services.dart';
 import '../../core/models.dart';
 import '../format.dart';
 import '../theme/tokens.dart';
@@ -61,6 +62,7 @@ class TrackRow extends StatelessWidget {
     final blocked = unavailable != null;
     return Interactive(
       onTap: onTap,
+      onDoubleClick: onTap == null || blocked ? null : () => openFocusFor(context, track),
       onSecondaryTap: onContextMenu,
       builder: (context, s) {
         final hovered = s.hovered || forceHover;

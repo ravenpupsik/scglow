@@ -198,13 +198,12 @@ void main() {
     expect(find.text('Nia Vale'), findsWidgets);
   });
 
-  testWidgets('capsule cover toggles focus mode; only the panel button opens the panel',
+  testWidgets('capsule cover toggles focus; empty capsule space and the title toggle the panel',
       (tester) async {
     final h = await pv.boot(tester, ThemeMode.dark, size: const Size(1920, 1080));
     await tester.runAsync(() => h.playHarbor());
     await pv.settle(tester);
     final cover = find.byKey(const ValueKey('capsule-cover'));
-    final button = find.byKey(const ValueKey('panel-button'));
     BoxDecoration? rim() =>
         tester.widget<Container>(cover).foregroundDecoration as BoxDecoration?;
     expect(rim(), isNull);
@@ -217,22 +216,51 @@ void main() {
     await pv.settle(tester);
     expect(h.services.focus.isOn, isFalse);
     expect(rim(), isNull);
+
     final capsule = find.byType(FloatingPlayer);
-    final artist = find.descendant(of: capsule, matching: find.text('Mira Solen'));
+    final title = find.descendant(of: capsule, matching: find.text('Glass Harbor'));
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     addTearDown(mouse.removePointer);
-    await mouse.addPointer(location: tester.getCenter(artist));
+    await mouse.addPointer(location: tester.getCenter(title));
     await tester.pump();
     expect(RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
-        isNot(SystemMouseCursors.click));
-    await tester.tap(artist);
-    final box = tester.getRect(capsule);
-    await tester.tapAt(Offset(box.right - 6, box.bottom - 4));
-    await pv.settle(tester);
-    expect(h.services.panel.isOpen, isFalse);
-    await tester.tap(button);
+        SystemMouseCursors.click);
+    await tester.tap(title);
     await pv.settle(tester);
     expect(h.services.panel.isOpen, isTrue);
+    expect(rim(), isNull, reason: 'the rim marks focus, not the panel');
+    await tester.tap(title);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(h.services.panel.isOpen, isFalse);
+    expect(find.byType(TrackPanelView), findsOneWidget, reason: 'closing animates');
+    await pv.settle(tester);
+    expect(find.byType(TrackPanelView), findsNothing);
+    final box = tester.getRect(capsule);
+    await tester.tapAt(Offset(box.right - 6, box.top + 4));
+    await pv.settle(tester);
+    expect(h.services.panel.isOpen, isTrue, reason: 'empty capsule space');
+    h.services.panel.close();
+    await pv.settle(tester);
+
+    // Controls and the dead zones around them do their own thing only.
+    final next = tester.getRect(byLabel('Next'));
+    final prev = tester.getRect(byLabel('Previous'));
+    final heart = tester.getRect(find.descendant(of: capsule, matching: find.byType(HeartButton)));
+    final seek = tester.getRect(find.byType(SeekLine));
+    final vol = tester.getRect(find.byType(VolumeLine));
+    for (final at in [
+      Offset((prev.right + next.left) / 2, next.center.dy),
+      Offset(next.right + 4, next.center.dy),
+      Offset(heart.right + 4, heart.center.dy),
+      Offset(seek.left - 4, seek.center.dy),
+      Offset(vol.right + 4, vol.center.dy),
+    ]) {
+      await tester.tapAt(at);
+      await pv.settle(tester);
+      expect(h.services.panel.isOpen, isFalse, reason: 'guard at $at');
+      expect(h.services.library.isLiked(h.services.player.current!), isTrue,
+          reason: 'like kept at $at');
+    }
     for (final f in [
       byLabel('Next'),
       byLabel('Previous'),
@@ -240,21 +268,18 @@ void main() {
       byLabel('Mute'),
       find.byType(VolumeLine),
       find.byType(SeekLine),
+      find.descendant(of: capsule, matching: find.byType(HeartButton)),
     ]) {
       await tester.tap(f);
       await pv.settle(tester);
-      expect(h.services.panel.isOpen, isTrue, reason: '$f');
+      expect(h.services.panel.isOpen, isFalse, reason: '$f');
     }
-    await tester.tap(button);
-    await tester.pump(const Duration(milliseconds: 100));
-    expect(h.services.panel.isOpen, isFalse);
-    expect(find.byType(TrackPanelView), findsOneWidget, reason: 'closing animates');
-    await pv.settle(tester);
-    expect(find.byType(TrackPanelView), findsNothing);
     h.services.panel.show();
     await pv.settle(tester);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await pv.settle(tester);
     expect(h.services.panel.isOpen, isFalse);
+    // Let the unlike message expire.
+    await tester.pump(const Duration(seconds: 5));
   });
 }

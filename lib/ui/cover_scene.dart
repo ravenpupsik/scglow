@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -59,6 +60,65 @@ abstract final class CoverColor {
       (g / n).round(),
       (b / n).round(),
     );
+  }
+
+  // Two or three distinct colours of the cover, most prominent first, for the
+  // Focus backdrop. Weighted by area and saturation; near-duplicates merge.
+  static List<Color> palette(Uint8List rgba, int size, {int count = 3}) {
+    if (size < 16 || rgba.length < size * size * 4) return const [];
+    final buckets = <int, List<double>>{};
+    for (var i = 0; i < size * size; i++) {
+      final r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+      final (h, s, l) = _rgbToHsl((r, g, b));
+      if (l < 0.06 || l > 0.96) continue;
+      final hb = s < 0.12 ? 12 : (h * 12).floor() % 12;
+      final lb = (l * 3).floor().clamp(0, 2);
+      final key = hb * 3 + lb;
+      final w = 0.25 + s;
+      final e = buckets.putIfAbsent(key, () => [0, 0, 0, 0]);
+      e[0] += r * w;
+      e[1] += g * w;
+      e[2] += b * w;
+      e[3] += w;
+    }
+    final ranked = buckets.values.toList()..sort((a, b) => b[3].compareTo(a[3]));
+    final out = <Color>[];
+    for (final e in ranked) {
+      final c = Color.fromARGB(255, (e[0] / e[3]).round(), (e[1] / e[3]).round(),
+          (e[2] / e[3]).round());
+      if (out.every((o) => _distance(o, c) > 40)) out.add(c);
+      if (out.length == count) break;
+    }
+    if (out.isEmpty) return const [];
+    final (h, s, l) = _rgbToHsl(_rgb(out.first));
+    while (out.length < 2) {
+      final rgb = _hslToRgb(h, s, (l * 0.45).clamp(0.05, 1.0));
+      out.add(Color.fromARGB(255, rgb.$1, rgb.$2, rgb.$3));
+    }
+    return out;
+  }
+
+  static double _distance(Color a, Color b) {
+    final (l1, a1, b1) = _rgbToLab(_rgb(a));
+    final (l2, a2, b2) = _rgbToLab(_rgb(b));
+    return math.sqrt((l1 - l2) * (l1 - l2) + (a1 - a2) * (a1 - a2) + (b1 - b2) * (b1 - b2)) *
+        2.55;
+  }
+
+  // A palette colour toned for the full-window Focus backdrop: rich but never
+  // glaring behind the sharp cover.
+  static Color glow(Color c, {required bool night}) {
+    final (h, s, l) = _rgbToHsl(_rgb(c));
+    final ss = math.min(s, 0.78);
+    final ll = night ? l.clamp(0.16, 0.42) : l.clamp(0.55, 0.80);
+    final rgb = _hslToRgb(h, ss, ll);
+    return Color.fromARGB(255, rgb.$1, rgb.$2, rgb.$3);
+  }
+
+  static Color glowBase(Color c, {required bool night}) {
+    final (h, s, l) = _rgbToHsl(_rgb(c));
+    final rgb = _hslToRgb(h, math.min(s, 0.6), night ? 0.07 + 0.06 * l : 0.86 + 0.06 * l);
+    return Color.fromARGB(255, rgb.$1, rgb.$2, rgb.$3);
   }
 
   static Color windowTint(Color cover, {required bool night}) {
@@ -178,12 +238,14 @@ class CoverArt {
     required this.spot,
     required this.bright,
     this.dominant,
+    this.palette = const [],
   });
 
   final String url;
 
   final ui.Image spot, bright;
   final Color? dominant;
+  final List<Color> palette;
 
   static const source = 64;
 
@@ -249,8 +311,14 @@ class CoverArt {
 
   static const inset = 0.06, corner = 0.12, featherSigma = 0.025;
 
+  // Pixel work runs in a background isolate, so a track change never costs a
+  // frame on the UI thread; only the GPU upload happens here.
   static Future<CoverArt> build(String url, Uint8List rgba64) async {
-    final blurred = blur(rgba64, source);
+    final (blurred, dominant, palette) = await Isolate.run(() {
+      final d = CoverColor.dominant(rgba64, source);
+      final p = CoverColor.palette(rgba64, source);
+      return (blur(rgba64, source), d?.toARGB32(), [for (final c in p) c.toARGB32()]);
+    });
     final small = Completer<ui.Image>();
     ui.decodeImageFromPixels(
       blurred,
@@ -267,7 +335,8 @@ class CoverArt {
       url: url,
       spot: spot,
       bright: bright,
-      dominant: CoverColor.dominant(rgba64, source),
+      dominant: dominant == null ? null : Color(dominant),
+      palette: [for (final v in palette) Color(v)],
     );
   }
 
@@ -863,15 +932,16 @@ Widget _crossfade(Widget child) => AnimatedSwitcher(
 );
 
 class CoverBackground extends StatelessWidget {
-  const CoverBackground({super.key, this.scene, this.focus});
+  const CoverBackground({super.key, this.scene, this.focus, this.glow});
 
   final CoverScene? scene;
 
-  // Focus mode progress, 0..1: the blurred spot moves behind the sharp cover,
-  // zooms by FocusGeo.zoom and the whole window takes the cover colour.
+  // Focus mode progress, 0..1: the blurred spot zooms by FocusGeo.zoom.
   final Animation<double>? focus;
 
-  static const focusTint = 0.45;
+  // Focus backdrop progress, 0..1 over 400 ms: the square spot dissolves and
+  // the palette glow takes the whole window.
+  final Animation<double>? glow;
 
   static const coverShare = 0.70;
 
@@ -898,105 +968,99 @@ class CoverBackground extends StatelessWidget {
     );
   }
 
+  static final _zoom = Tween<double>(begin: 1, end: 1 + FocusGeo.zoom);
+
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final s = scene;
     if (s == null) return SmokeBackground(active: app.window.active);
     final c = AgColors.of(context);
+    final f = focus ?? kAlwaysDismissedAnimation;
+    final g = glow ?? kAlwaysDismissedAnimation;
     return ListenableBuilder(
       listenable: Listenable.merge([app.tint, app.focus, s.art]),
       builder: (context, _) {
         final art = app.tint.value || app.focus.isOn ? s.art.value : null;
         final d = art?.dominant;
+        final Widget base;
         if (art == null) {
-          return _crossfade(
+          base = _crossfade(
             SmokeBackground(
               key: const ValueKey('smoke'),
               active: app.window.active,
             ),
           );
-        }
-        final tint = d == null
-            ? c.washBase
-            : CoverColor.windowTint(d, night: c.isNight);
-        final f = focus ?? const AlwaysStoppedAnimation<double>(0);
-        return _crossfade(
-          Stack(
-            key: const ValueKey('cover'),
-            fit: StackFit.expand,
-            children: [
-              TweenAnimationBuilder<Color?>(
-                tween: ColorTween(end: tint),
-                duration: const Duration(milliseconds: 600),
-                builder: (context, color, _) => Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    RepaintBoundary(
-                      child: CustomPaint(
-                        painter: WashPainter(
-                          tint: color ?? tint,
-                          base: c.washBase,
-                          dot: c.washDot,
-                        ),
-                        child: const SizedBox.expand(),
+        } else {
+          final tint = d == null
+              ? c.washBase
+              : CoverColor.windowTint(d, night: c.isNight);
+          base = _crossfade(
+            Stack(
+              key: const ValueKey('cover'),
+              fit: StackFit.expand,
+              children: [
+                TweenAnimationBuilder<Color?>(
+                  tween: ColorTween(end: tint),
+                  duration: const Duration(milliseconds: 600),
+                  builder: (context, color, _) => RepaintBoundary(
+                    child: CustomPaint(
+                      painter: WashPainter(
+                        tint: color ?? tint,
+                        base: c.washBase,
+                        dot: c.washDot,
                       ),
+                      child: const SizedBox.expand(),
                     ),
-                    AnimatedBuilder(
-                      animation: f,
-                      builder: (context, _) => f.value <= 0
-                          ? const SizedBox.shrink()
-                          : ColoredBox(
-                              color: (color ?? tint).withValues(
-                                alpha: focusTint * f.value,
-                              ),
-                            ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-              LayoutBuilder(
-                builder: (context, box) => AnimatedBuilder(
-                  animation: f,
-                  builder: (context, child) {
-                    final size = box.biggest;
-                    final t = f.value;
-                    final r = t <= 0
-                        ? coverRect(size)
-                        : Rect.lerp(coverRect(size), FocusGeo.halo(size), t)!;
-                    return Stack(
-                      children: [
-                        Positioned.fromRect(
-                          rect: r,
-                          child: Transform.scale(
-                            scale: 1 + FocusGeo.zoom * t,
-                            child: child,
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                  child: RepaintBoundary(
-                          child: ColorFiltered(
-                            colorFilter: ColorFilter.matrix(tone(c.isNight)),
-                            child: ValueListenableBuilder<CoverArt?>(
-                              valueListenable: s.art,
-                              builder: (context, a, _) => _crossfade(
-                                a == null
-                                    ? const SizedBox.expand()
-                                    : _Spot(
-                                        key: ValueKey(a.url),
-                                        art: a,
-                                        pulse: s.pulse,
-                                      ),
+                LayoutBuilder(
+                  builder: (context, box) => Stack(
+                    children: [
+                      Positioned.fromRect(
+                        rect: coverRect(box.biggest),
+                        child: FadeTransition(
+                          opacity: ReverseAnimation(g),
+                          child: ScaleTransition(
+                            scale: f.drive(_zoom),
+                            child: RepaintBoundary(
+                              child: ColorFiltered(
+                                colorFilter: ColorFilter.matrix(tone(c.isNight)),
+                                child: ValueListenableBuilder<CoverArt?>(
+                                  valueListenable: s.art,
+                                  builder: (context, a, _) => _crossfade(
+                                    a == null
+                                        ? const SizedBox.expand()
+                                        : _Spot(
+                                            key: ValueKey(a.url),
+                                            art: a,
+                                            pulse: s.pulse,
+                                          ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
                         ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
+              ],
+            ),
+          );
+        }
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            base,
+            AnimatedBuilder(
+              animation: g,
+              builder: (context, child) =>
+                  g.value <= 0 ? const SizedBox.shrink() : child!,
+              child: FocusGlow(art: s.art.value, visible: g, pulse: s.pulse),
+            ),
+          ],
         );
       },
     );

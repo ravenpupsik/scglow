@@ -510,6 +510,7 @@ class PanelTrackRow extends StatelessWidget {
     final c = AgColors.of(context);
     return Interactive(
       onTap: onTap,
+      onDoubleClick: onTap == null || unavailable ? null : () => openFocusFor(context, track),
       onSecondaryTap: onContextMenu,
       cursor: onTap == null ? MouseCursor.defer : SystemMouseCursors.click,
       builder: (context, s) {

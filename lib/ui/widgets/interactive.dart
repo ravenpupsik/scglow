@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/gestures.dart' show kDoubleTapTimeout;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -15,6 +18,7 @@ class Interactive extends StatefulWidget {
     required this.builder,
     this.onTap,
     this.onDoubleTap,
+    this.onDoubleClick,
     this.onSecondaryTap,
     this.enabled = true,
     this.cursor = SystemMouseCursors.click,
@@ -25,6 +29,10 @@ class Interactive extends StatefulWidget {
   final Widget Function(BuildContext context, InteractState state) builder;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
+
+  // A second tap within kDoubleTapTimeout calls this instead of onTap. Unlike
+  // onDoubleTap it never delays the first tap.
+  final VoidCallback? onDoubleClick;
   final void Function(Offset globalPosition)? onSecondaryTap;
   final bool enabled;
   final MouseCursor cursor;
@@ -38,6 +46,25 @@ class Interactive extends StatefulWidget {
 
 class _InteractiveState extends State<Interactive> {
   bool _hover = false, _pressed = false, _focus = false;
+  Timer? _armed;
+
+  void _tap() {
+    final dbl = widget.onDoubleClick;
+    if (dbl != null && (_armed?.isActive ?? false)) {
+      _armed!.cancel();
+      _armed = null;
+      dbl();
+      return;
+    }
+    if (dbl != null) _armed = Timer(kDoubleTapTimeout, () {});
+    widget.onTap?.call();
+  }
+
+  @override
+  void dispose() {
+    _armed?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -66,7 +93,7 @@ class _InteractiveState extends State<Interactive> {
           onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
           onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
           onTapCancel: enabled ? () => setState(() => _pressed = false) : null,
-          onTap: enabled ? widget.onTap : null,
+          onTap: enabled ? _tap : null,
           onDoubleTap: widget.onDoubleTap,
           onSecondaryTapUp: widget.onSecondaryTap == null
               ? null

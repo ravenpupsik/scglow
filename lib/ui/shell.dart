@@ -17,11 +17,17 @@ import 'widgets/glass.dart';
 export 'top_bar.dart' show SearchFocus;
 
 class WindowFrame extends StatelessWidget {
-  const WindowFrame({super.key, required this.child, this.scene, this.focus});
+  const WindowFrame({
+    super.key,
+    required this.child,
+    this.scene,
+    this.focus,
+    this.glow,
+  });
 
   final Widget child;
   final CoverScene? scene;
-  final Animation<double>? focus;
+  final Animation<double>? focus, glow;
 
   @override
   Widget build(BuildContext context) {
@@ -42,7 +48,7 @@ class WindowFrame extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          CoverBackground(scene: scene, focus: focus),
+          CoverBackground(scene: scene, focus: focus, glow: glow),
           child,
         ],
       ),
@@ -386,6 +392,7 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
   CoverScene? _scene;
   AppServices? _app;
   String? _offered;
+  int? _preloaded;
   late final AnimationController _anim = AnimationController(
     vsync: this,
     duration: Dp.panelAnim,
@@ -402,6 +409,14 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
   late final Animation<double> _f = CurvedAnimation(
     parent: _focusAnim,
     curve: Curves.easeOutCubic,
+  );
+  late final AnimationController _glowAnim = AnimationController(
+    vsync: this,
+    duration: FocusGeo.glow,
+  );
+  late final Animation<double> _g = CurvedAnimation(
+    parent: _glowAnim,
+    curve: Curves.easeInOut,
   );
   // 1 while the capsule and the close button are shown in focus mode.
   late final AnimationController _chrome = AnimationController(
@@ -440,6 +455,20 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
       app.updates.onSilentOffer = _onSilentOffer;
       _anim.value = _wantOpen ? 1 : 0;
       _focusAnim.value = app.focus.isOn ? 1 : 0;
+      _glowAnim.value = app.focus.isOn ? 1 : 0;
+    }
+    _preload();
+  }
+
+  // Decode the sharp cover for every new track, so entering Focus or
+  // switching tracks in it never waits on the network.
+  void _preload() {
+    final t = _app?.player.current;
+    if (t == null || t.id == _preloaded) return;
+    _preloaded = t.id;
+    final url = FocusGeo.artUrlOf(t);
+    if (url != null) {
+      precacheImage(FocusGeo.provider(url), context, onError: (_, _) {});
     }
   }
 
@@ -450,6 +479,7 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
       if (app.panel.isOpen) app.panel.close();
       app.focus.exit();
     }
+    if (mounted) _preload();
     final target = _wantOpen ? 1.0 : 0.0;
     if (_anim.value == target && !_anim.isAnimating) return;
     if (_reduce) {
@@ -471,10 +501,13 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
     }
     if (_reduce) {
       _focusAnim.value = on ? 1 : 0;
+      _glowAnim.value = on ? 1 : 0;
     } else if (on) {
       _focusAnim.forward();
+      _glowAnim.forward();
     } else {
       _focusAnim.reverse();
+      _glowAnim.reverse();
     }
     _showChrome(instant: true);
   }
@@ -529,31 +562,21 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
     _app?.updates.onSilentOffer = null;
     _anim.dispose();
     _focusAnim.dispose();
+    _glowAnim.dispose();
     _chrome.dispose();
     _scene?.dispose();
     super.dispose();
-  }
-
-  // Fades a layer out as focus mode comes in, shifted by [shift] dp.
-  // The tree shape stays the same at f == 0 so nothing below loses its state.
-  static Widget _recede(double f, double shift, Widget child) {
-    return IgnorePointer(
-      ignoring: f > 0,
-      child: Opacity(
-        opacity: 1 - f,
-        child: Transform.translate(offset: Offset(0, shift * f), child: child),
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final c = AgColors.of(context);
-    final content = ClipRect(child: widget.child);
+    final content = RepaintBoundary(child: ClipRect(child: widget.child));
     return WindowFrame(
       scene: _scene,
       focus: _f,
+      glow: _g,
       child: CoverSceneHost(
         scene: _scene!,
         child: PanelScope(
@@ -561,156 +584,179 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
           child: LayoutBuilder(
             builder: (context, box) {
               final size = box.biggest;
-              final panel = TrackPanelView(
-                narrow: size.width <= Dp.panelBreakpoint,
-              );
-              final capsule = MouseRegion(
-                onEnter: (_) => _overBar = true,
-                onExit: (_) {
-                  _overBar = false;
-                  if (app.focus.isOn) _showChrome();
-                },
-                child: Listener(
-                  onPointerDown: (_) => _pressingBar = true,
-                  onPointerUp: (_) {
-                    _pressingBar = false;
-                    if (app.focus.isOn) _showChrome();
-                  },
-                  onPointerCancel: (_) => _pressingBar = false,
-                  child: FloatingPlayer(width: PlayerGeo.width(size.width)),
+              final panel = _Recede(
+                animation: _f,
+                child: RepaintBoundary(
+                  child: TrackPanelView(narrow: size.width <= Dp.panelBreakpoint),
                 ),
               );
-              final bars = const TopBar();
+              final lift = size.height -
+                  FocusGeo.barTop(size) -
+                  Dp.playerH -
+                  Dp.playerBottom;
+              final capsule = _FocusChrome(
+                focus: _f,
+                chrome: _chrome,
+                lift: lift,
+                child: MouseRegion(
+                  onEnter: (_) => _overBar = true,
+                  onExit: (_) {
+                    _overBar = false;
+                    if (app.focus.isOn) _showChrome();
+                  },
+                  child: Listener(
+                    onPointerDown: (_) => _pressingBar = true,
+                    onPointerUp: (_) {
+                      _pressingBar = false;
+                      if (app.focus.isOn) _showChrome();
+                    },
+                    onPointerCancel: (_) => _pressingBar = false,
+                    child: FloatingPlayer(width: PlayerGeo.width(size.width)),
+                  ),
+                ),
+              );
+              final top = _Recede(
+                animation: _f,
+                shift: -12,
+                child: const RepaintBoundary(child: TopBar()),
+              );
+              final cover = Positioned.fromRect(
+                key: const ValueKey('focus-art'),
+                rect: FocusGeo.cover(size),
+                child: IgnorePointer(
+                  child: FadeTransition(
+                    opacity: _f,
+                    child: FocusCover(
+                      player: app.player,
+                      side: FocusGeo.side(size),
+                    ),
+                  ),
+                ),
+              );
+              final close = Positioned(
+                key: const ValueKey('focus-x'),
+                top: 10,
+                right: 12,
+                child: _FocusChrome(
+                  focus: _f,
+                  chrome: _chrome,
+                  fade: true,
+                  child: FocusCloseButton(onTap: app.focus.exit),
+                ),
+              );
+              final drag = Positioned(
+                key: const ValueKey('focus-drag'),
+                left: 0,
+                right: 0,
+                top: 0,
+                height: Dp.topBar,
+                child: ListenableBuilder(
+                  listenable: app.focus,
+                  builder: (context, _) => app.focus.isOn
+                      ? const DragZone()
+                      : const SizedBox.shrink(),
+                ),
+              );
               return ListenableBuilder(
                 listenable: app.nav,
                 builder: (context, _) {
                   final maxCol = app.nav.route is TrackRoute
                       ? Dp.trackColumn
                       : Dp.column;
-                  return AnimatedBuilder(
-                    animation: Listenable.merge([_t, _f, _chrome, app.focus]),
+                  final body = AnimatedBuilder(
+                    animation: _t,
                     builder: (context, _) {
                       final g = PanelGeo(size, _t.value, maxColumn: maxCol);
                       final shown = _anim.value > 0;
-                      final f = _f.value;
-                      final focusOn = app.focus.isOn;
-                      final chrome = focusOn || f > 0 ? _chrome.value : 1.0;
-                      final restBottom = Dp.playerBottom;
-                      final focusBottom =
-                          size.height - FocusGeo.barTop(size) - Dp.playerH;
-                      final hidden = focusOn && _chrome.value == 0;
-                      return MouseRegion(
-                        cursor: hidden ? SystemMouseCursors.none : MouseCursor.defer,
-                        child: Listener(
-                          behavior: HitTestBehavior.translucent,
-                          onPointerHover: _onPointer,
-                          onPointerMove: _onPointer,
-                          onPointerDown: _onPointer,
-                          child: Stack(
+                      return Stack(
+                        children: [
+                          Column(
                             children: [
-                              Column(
-                                children: [
-                                  _recede(f, -12, bars),
-                                  Expanded(
-                                    child: _recede(
-                                      f,
-                                      16,
-                                      Stack(
-                                        children: [
-                                          Positioned(
-                                            left: g.columnLeft - Dp.hPad,
-                                            width: g.columnInner + 2 * Dp.hPad,
-                                            top: 0,
-                                            bottom: Dp.contentBottom,
-                                            child: content,
-                                          ),
-                                        ],
+                              top,
+                              Expanded(
+                                child: _Recede(
+                                  animation: _f,
+                                  shift: 16,
+                                  child: Stack(
+                                    children: [
+                                      Positioned(
+                                        left: g.columnLeft - Dp.hPad,
+                                        width: g.columnInner + 2 * Dp.hPad,
+                                        top: 0,
+                                        bottom: Dp.contentBottom,
+                                        child: content,
                                       ),
-                                    ),
+                                    ],
                                   ),
-                                ],
-                              ),
-                              if (shown && g.overlay)
-                                Positioned(
-                                  key: const ValueKey('panel-scrim'),
-                                  left: 0,
-                                  right: 0,
-                                  top: Dp.topBar,
-                                  bottom: 0,
-                                  child: _recede(
-                                    f,
-                                    0,
-                                    GestureDetector(
-                                      behavior: HitTestBehavior.opaque,
-                                      onTap: app.panel.close,
-                                      child: ColoredBox(
-                                        color: c.panelScrim.withValues(
-                                          alpha: c.panelScrim.a * _t.value,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              if (shown)
-                                Positioned(
-                                  key: const ValueKey('panel'),
-                                  left: g.panelLeft,
-                                  top: g.panelTop,
-                                  width: g.panelWidth,
-                                  height: g.panelBottom - g.panelTop,
-                                  child: _recede(f, 0, panel),
-                                ),
-                              if (f > 0) ...[
-                                const Positioned(
-                                  key: ValueKey('focus-drag'),
-                                  left: 0,
-                                  right: 0,
-                                  top: 0,
-                                  height: Dp.topBar,
-                                  child: DragZone(),
-                                ),
-                                Positioned.fromRect(
-                                  key: const ValueKey('focus-art'),
-                                  rect: FocusGeo.cover(size),
-                                  child: IgnorePointer(
-                                    child: Opacity(
-                                      opacity: f,
-                                      child: FocusCover(
-                                        track: app.player.current,
-                                        side: FocusGeo.side(size),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                              Positioned(
-                                key: const ValueKey('capsule'),
-                                left: 0,
-                                right: 0,
-                                bottom: restBottom + (focusBottom - restBottom) * f,
-                                child: Center(
-                                  child: Opacity(opacity: chrome, child: capsule),
                                 ),
                               ),
-                              if (f > 0)
-                                Positioned(
-                                  key: const ValueKey('focus-x'),
-                                  top: 10,
-                                  right: 12,
-                                  child: IgnorePointer(
-                                    ignoring: !focusOn || _chrome.value == 0,
-                                    child: Opacity(
-                                      opacity: f * chrome,
-                                      child: FocusCloseButton(onTap: app.focus.exit),
-                                    ),
-                                  ),
-                                ),
-                              const SnackbarHost(key: ValueKey('snackbar')),
                             ],
                           ),
-                        ),
+                          if (shown && g.overlay)
+                            Positioned(
+                              key: const ValueKey('panel-scrim'),
+                              left: 0,
+                              right: 0,
+                              top: Dp.topBar,
+                              bottom: 0,
+                              child: _Recede(
+                                animation: _f,
+                                child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: app.panel.close,
+                                  child: ColoredBox(
+                                    color: c.panelScrim.withValues(
+                                      alpha: c.panelScrim.a * _t.value,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          if (shown)
+                            Positioned(
+                              key: const ValueKey('panel'),
+                              left: g.panelLeft,
+                              top: g.panelTop,
+                              width: g.panelWidth,
+                              height: g.panelBottom - g.panelTop,
+                              child: panel,
+                            ),
+                          drag,
+                          cover,
+                          // Full height, so the capsule stays hittable when Focus
+                          // lifts it with a transform.
+                          Positioned(
+                            key: const ValueKey('capsule'),
+                            left: 0,
+                            right: 0,
+                            top: 0,
+                            bottom: Dp.playerBottom,
+                            child: Align(
+                              alignment: Alignment.bottomCenter,
+                              child: capsule,
+                            ),
+                          ),
+                          close,
+                          const SnackbarHost(key: ValueKey('snackbar')),
+                        ],
                       );
                     },
+                  );
+                  return AnimatedBuilder(
+                    animation: Listenable.merge([_chrome, app.focus]),
+                    builder: (context, child) => MouseRegion(
+                      cursor: app.focus.isOn && _chrome.value == 0
+                          ? SystemMouseCursors.none
+                          : MouseCursor.defer,
+                      child: child,
+                    ),
+                    child: Listener(
+                      behavior: HitTestBehavior.translucent,
+                      onPointerHover: _onPointer,
+                      onPointerMove: _onPointer,
+                      onPointerDown: _onPointer,
+                      child: body,
+                    ),
                   );
                 },
               );
@@ -720,4 +766,64 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
       ),
     );
   }
+}
+
+// Fades and shifts a layer out as Focus comes in. Only opacity and a
+// translation change per frame; the child is built once.
+class _Recede extends StatelessWidget {
+  const _Recede({required this.animation, required this.child, this.shift = 0});
+
+  final Animation<double> animation;
+  final double shift;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: animation,
+        builder: (context, child) {
+          final f = animation.value;
+          return IgnorePointer(
+            ignoring: f > 0,
+            child: Opacity(
+              opacity: 1 - f,
+              child: Transform.translate(offset: Offset(0, shift * f), child: child),
+            ),
+          );
+        },
+        child: child,
+      );
+}
+
+// The capsule (lifted under the cover) and the close button (faded in) in
+// Focus, both hidden while the pointer rests.
+class _FocusChrome extends StatelessWidget {
+  const _FocusChrome({
+    required this.focus,
+    required this.chrome,
+    required this.child,
+    this.lift = 0,
+    this.fade = false,
+  });
+
+  final Animation<double> focus, chrome;
+  final double lift;
+  final bool fade;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: Listenable.merge([focus, chrome]),
+        builder: (context, child) {
+          final f = focus.value;
+          final shown = f > 0 ? chrome.value : 1.0;
+          final opacity = fade ? f * shown : shown;
+          Widget out = Opacity(opacity: opacity, child: child);
+          if (lift != 0) {
+            out = Transform.translate(offset: Offset(0, -lift * f), child: out);
+          }
+          if (fade) out = IgnorePointer(ignoring: f <= 0 || chrome.value == 0, child: out);
+          return out;
+        },
+        child: child,
+      );
 }

@@ -19,9 +19,10 @@ abstract final class PlayerGeo {
   static const coverX = 12.0;
   static const coverY = 8.0;
   static const transportY = 28.0;
-  static const panelBtn = 24.0;
-  static const panelX = coverX + Dp.playerCover + 4;
-  static const textX = panelX + panelBtn + 6;
+  static const textX = coverX + Dp.playerCover + 10;
+
+  // Dead zone around controls, so a near miss never toggles the panel.
+  static const guard = 8.0;
 
   static const offsets = [-84.0, -47.0, 0.0, 47.0, 84.0];
 
@@ -57,18 +58,12 @@ class FloatingPlayer extends StatelessWidget {
     final player = app.player;
     final w = width;
     return RepaintBoundary(
-      child: Container(
+      child: SizedBox(
         width: w,
         height: Dp.playerH,
-        decoration: BoxDecoration(
-          color: c.pillFill,
-          borderRadius: BorderRadius.circular(Dp.rPlayer),
-          boxShadow: c.pillShadows,
-        ),
-        foregroundDecoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(Dp.rPlayer),
-          border: Border.all(color: c.rim),
-        ),
+        child: DecoratedBox(
+        // The same glass as the track lists; the rim must not inset the content.
+        decoration: c.card(fill: c.cardGlass, radius: Dp.rPlayer),
         child: ListenableBuilder(
           listenable: Listenable.merge(
               [player, app.library, app.details, app.panel, app.focus]),
@@ -86,32 +81,56 @@ class FloatingPlayer extends StatelessWidget {
             final timeW = PlayerGeo.timeW(track?.durationMs ?? 0);
             final seekX = PlayerGeo.timeX + timeW + PlayerGeo.timeGap;
             final marks = idle ? const <int>[] : commentTimes(app, track);
-            return Stack(
+            const g = PlayerGeo.guard;
+            final transportL = mid + PlayerGeo.offsets.first - _btn / 2 - g;
+            final transportR = mid + PlayerGeo.offsets.last + _btn / 2 + g;
+            void togglePanel() {
+              if (app.focus.isOn) {
+                app.focus.exit();
+                app.panel.show();
+              } else {
+                app.panel.toggle();
+              }
+            }
+
+            return MouseRegion(
+              cursor: idle ? MouseCursor.defer : SystemMouseCursors.click,
+              child: GestureDetector(
+                key: const ValueKey('capsule-body'),
+                behavior: HitTestBehavior.opaque,
+                onTap: idle ? null : togglePanel,
+                child: Stack(
                   clipBehavior: Clip.none,
                   children: [
+                    if (!idle) ...[
+                      Positioned(
+                        left: transportL,
+                        width: transportR - transportL,
+                        top: math.max(0.0, ty - Dp.playBtn / 2 - g),
+                        height: Dp.playBtn + 2 * g,
+                        child: const _Guard(),
+                      ),
+                      Positioned(
+                        left: volX - 22 - 6 - g,
+                        width: Dp.volW + 22 + 6 + 2 * g,
+                        top: ty - 15 - g,
+                        height: 30 + 2 * g,
+                        child: const _Guard(),
+                      ),
+                      Positioned(
+                        left: seekX - g,
+                        right: seekX - g,
+                        top: PlayerGeo.seekY - SeekLine.zone / 2 - 2,
+                        height: SeekLine.zone + 4,
+                        child: const _Guard(),
+                      ),
+                    ],
                     Positioned(
                       left: PlayerGeo.coverX,
                       top: PlayerGeo.coverY,
                       child: idle
                           ? const ArtPlaceholder(size: Dp.playerCover)
                           : _CoverToggle(track: track, on: app.focus.isOn),
-                    ),
-                    Positioned(
-                      left: PlayerGeo.panelX,
-                      top: PlayerGeo.coverY + (Dp.playerCover - PlayerGeo.panelBtn) / 2,
-                      child: PanelButton(
-                        open: app.panel.isOpen && !app.focus.isOn,
-                        onTap: idle
-                            ? null
-                            : () {
-                                if (app.focus.isOn) {
-                                  app.focus.exit();
-                                  app.panel.show();
-                                } else {
-                                  app.panel.toggle();
-                                }
-                              },
-                      ),
                     ),
                     Positioned(
                       left: PlayerGeo.textX,
@@ -226,8 +245,11 @@ class FloatingPlayer extends StatelessWidget {
                           player: player, idle: idle, position: false),
                     ),
                   ],
+                ),
+              ),
             );
           },
+        ),
         ),
       ),
     );
@@ -271,39 +293,16 @@ class _CoverToggle extends StatelessWidget {
   }
 }
 
-class PanelButton extends StatelessWidget {
-  const PanelButton({super.key, required this.open, required this.onTap});
-
-  static const label = 'Track panel';
-
-  final bool open;
-  final VoidCallback? onTap;
+// Swallows taps next to a control so they neither toggle the panel nor miss.
+class _Guard extends StatelessWidget {
+  const _Guard();
 
   @override
-  Widget build(BuildContext context) {
-    final c = AgColors.of(context);
-    return Interactive(
-      onTap: onTap,
-      tooltip: onTap == null ? null : label,
-      semanticLabel: onTap == null ? null : (open ? 'Hide track panel' : 'Show track panel'),
-      builder: (context, s) {
-        final col = onTap == null
-            ? c.disabled
-            : open || s.hovered
-                ? c.ink
-                : c.offIcon;
-        return FocusRing(
-          show: s.focused,
-          radius: Dp.rIconBtn,
-          child: SizedBox.square(
-            key: const ValueKey('panel-button'),
-            dimension: PlayerGeo.panelBtn,
-            child: Center(child: AgIcon(AgGlyph.panel, color: col, size: 20)),
-          ),
-        );
-      },
-    );
-  }
+  Widget build(BuildContext context) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {},
+        child: const MouseRegion(cursor: SystemMouseCursors.basic),
+      );
 }
 
 List<int> commentTimes(AppServices app, Track track) {
@@ -418,15 +417,23 @@ class _NowPlaying extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: AgType.ui(13, c.ink, weight: 600)),
               ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 16,
-                height: 16,
-                child: HeartButton(
-                  liked: liked,
-                  size: 16,
-                  glyphSize: 22,
-                  onTap: () => app.library.toggleLike(track),
+              const SizedBox(width: 2),
+              GestureDetector(
+                key: const ValueKey('heart-guard'),
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: HeartButton(
+                      liked: liked,
+                      size: 16,
+                      glyphSize: 22,
+                      onTap: () => app.library.toggleLike(track),
+                    ),
+                  ),
                 ),
               ),
             ],

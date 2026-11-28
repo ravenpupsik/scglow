@@ -36,7 +36,6 @@ enum AgGlyph {
   chevron,
   note,
   jump,
-  panel,
 }
 
 class AgIcon extends StatelessWidget {
@@ -175,11 +174,6 @@ class AgIconPainter extends CustomPainter {
             canvas.drawCircle(p(.32 + j * .36, .22 + i * .28), 1.15, fill);
           }
         }
-      case AgGlyph.panel:
-        canvas.drawRRect(
-            RRect.fromLTRBR(s * .18, s * .24, s * .82, s * .76, Radius.circular(s * .06)),
-            stroke(1.3));
-        canvas.drawRect(Rect.fromLTRB(s * .58, s * .24, s * .82, s * .76), fill);
       case AgGlyph.show:
         canvas.drawRect(Rect.fromLTRB(s * .26, s * .26, s * .74, s * .74), stroke(1.2));
         canvas.drawRect(Rect.fromLTRB(s * .26, s * .26, s * .74, s * .42), fill);

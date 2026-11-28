@@ -106,7 +106,7 @@ void main() {
     expect(find.byType(PlayAllChip), findsOneWidget);
   });
 
-  testWidgets('panel button toggles the panel; × and Esc close it',
+  testWidgets('capsule click toggles the panel; × and Esc close it',
       (tester) async {
     final h = await pv.boot(tester, ThemeMode.light, size: const Size(1920, 1080));
     await tester.runAsync(() => h.playHarbor());
@@ -114,13 +114,10 @@ void main() {
     final player = find.byType(FloatingPlayer);
     await tester.tap(find.descendant(of: player, matching: find.text('Mira Solen')));
     await pv.settle(tester);
-    expect(h.services.panel.isOpen, isFalse, reason: 'only the button opens it');
-    await tester.tap(find.byKey(const ValueKey('panel-button')));
-    await pv.settle(tester);
     expect(h.services.panel.isOpen, isTrue);
     expect(find.byType(TrackPanelView), findsOneWidget);
     expect(find.byType(TrackScreen), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('panel-button')));
+    await tester.tap(find.descendant(of: player, matching: find.text('Mira Solen')));
     await pv.settle(tester);
     expect(h.services.panel.isOpen, isFalse);
     expect(find.byType(TrackPanelView), findsNothing);
@@ -201,12 +198,12 @@ void main() {
     expect(byLabel('Repeat one'), findsOneWidget);
   });
 
-  testWidgets('only the panel button has a hover tooltip', (tester) async {
+  testWidgets('buttons have no hover tooltips anywhere', (tester) async {
     final h = await pv.boot(tester, ThemeMode.dark, size: const Size(1920, 1080));
     await tester.runAsync(() => h.playHarbor());
     h.services.panel.show();
     await pv.settle(tester);
-    expect(find.byType(Tooltip), findsOneWidget);
+    expect(find.byType(Tooltip), findsNothing);
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     addTearDown(mouse.removePointer);
     await mouse.addPointer(location: Offset.zero);
@@ -217,15 +214,11 @@ void main() {
         .map((w) => w.semanticLabel!)
         .toSet();
     expect(labels, containsAll(['Shuffle off', 'Previous', 'Next', 'Mute',
-        'Account', 'Minimize', 'Close to tray', 'Close', 'Hide track panel']));
+        'Account', 'Minimize', 'Close to tray', 'Close', 'Focus mode']));
     for (final l in labels) {
       await mouse.moveTo(tester.getCenter(byLabel(l).first));
       await tester.pump(const Duration(seconds: 2));
-      if (l == 'Hide track panel') {
-        expect(find.text(PanelButton.label), findsOneWidget);
-      } else {
-        expect(find.text(PanelButton.label), findsNothing, reason: l);
-      }
+      expect(find.byType(Tooltip), findsNothing, reason: l);
     }
     await mouse.moveTo(Offset.zero);
     await pv.settle(tester);
