@@ -64,6 +64,7 @@ class AppServices {
   final Future<String?> Function(Track track)? waveformUrlOf;
   final AppNav nav = AppNav();
   final TrackPanel panel = TrackPanel();
+  final FocusMode focus = FocusMode();
   late final TintController tint = TintController(prefs);
   late final PulseController pulse = PulseController(prefs);
   final Messages messages = Messages();
@@ -75,6 +76,7 @@ class AppServices {
     library.reset(clearCache: true);
     nav.reset();
     panel.close();
+    focus.exit();
     await onLogout?.call();
     await session.logout();
   }

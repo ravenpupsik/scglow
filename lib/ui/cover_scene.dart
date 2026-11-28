@@ -11,6 +11,7 @@ import '../app/app_services.dart';
 import '../core/diag_log.dart';
 import '../core/models.dart';
 import '../player/player_controller.dart';
+import 'focus_view.dart';
 import 'theme/tokens.dart';
 import 'widgets/art_image.dart';
 import 'widgets/glass.dart';
@@ -862,9 +863,15 @@ Widget _crossfade(Widget child) => AnimatedSwitcher(
 );
 
 class CoverBackground extends StatelessWidget {
-  const CoverBackground({super.key, this.scene});
+  const CoverBackground({super.key, this.scene, this.focus});
 
   final CoverScene? scene;
+
+  // Focus mode progress, 0..1: the blurred spot moves behind the sharp cover,
+  // zooms by FocusGeo.zoom and the whole window takes the cover colour.
+  final Animation<double>? focus;
+
+  static const focusTint = 0.45;
 
   static const coverShare = 0.70;
 
@@ -898,9 +905,9 @@ class CoverBackground extends StatelessWidget {
     if (s == null) return SmokeBackground(active: app.window.active);
     final c = AgColors.of(context);
     return ListenableBuilder(
-      listenable: Listenable.merge([app.tint, s.art]),
+      listenable: Listenable.merge([app.tint, app.focus, s.art]),
       builder: (context, _) {
-        final art = app.tint.value ? s.art.value : null;
+        final art = app.tint.value || app.focus.isOn ? s.art.value : null;
         final d = art?.dominant;
         if (art == null) {
           return _crossfade(
@@ -913,6 +920,7 @@ class CoverBackground extends StatelessWidget {
         final tint = d == null
             ? c.washBase
             : CoverColor.windowTint(d, night: c.isNight);
+        final f = focus ?? const AlwaysStoppedAnimation<double>(0);
         return _crossfade(
           Stack(
             key: const ValueKey('cover'),
@@ -921,25 +929,54 @@ class CoverBackground extends StatelessWidget {
               TweenAnimationBuilder<Color?>(
                 tween: ColorTween(end: tint),
                 duration: const Duration(milliseconds: 600),
-                builder: (context, color, _) => RepaintBoundary(
-                  child: CustomPaint(
-                    painter: WashPainter(
-                      tint: color ?? tint,
-                      base: c.washBase,
-                      dot: c.washDot,
+                builder: (context, color, _) => Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    RepaintBoundary(
+                      child: CustomPaint(
+                        painter: WashPainter(
+                          tint: color ?? tint,
+                          base: c.washBase,
+                          dot: c.washDot,
+                        ),
+                        child: const SizedBox.expand(),
+                      ),
                     ),
-                    child: const SizedBox.expand(),
-                  ),
+                    AnimatedBuilder(
+                      animation: f,
+                      builder: (context, _) => f.value <= 0
+                          ? const SizedBox.shrink()
+                          : ColoredBox(
+                              color: (color ?? tint).withValues(
+                                alpha: focusTint * f.value,
+                              ),
+                            ),
+                    ),
+                  ],
                 ),
               ),
               LayoutBuilder(
-                builder: (context, box) {
-                  final r = coverRect(box.biggest);
-                  return Stack(
-                    children: [
-                      Positioned.fromRect(
-                        rect: r,
-                        child: RepaintBoundary(
+                builder: (context, box) => AnimatedBuilder(
+                  animation: f,
+                  builder: (context, child) {
+                    final size = box.biggest;
+                    final t = f.value;
+                    final r = t <= 0
+                        ? coverRect(size)
+                        : Rect.lerp(coverRect(size), FocusGeo.halo(size), t)!;
+                    return Stack(
+                      children: [
+                        Positioned.fromRect(
+                          rect: r,
+                          child: Transform.scale(
+                            scale: 1 + FocusGeo.zoom * t,
+                            child: child,
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                  child: RepaintBoundary(
                           child: ColorFiltered(
                             colorFilter: ColorFilter.matrix(tone(c.isNight)),
                             child: ValueListenableBuilder<CoverArt?>(
@@ -956,10 +993,7 @@ class CoverBackground extends StatelessWidget {
                             ),
                           ),
                         ),
-                      ),
-                    ],
-                  );
-                },
+                ),
               ),
             ],
           ),

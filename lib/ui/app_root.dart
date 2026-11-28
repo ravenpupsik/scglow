@@ -93,10 +93,53 @@ Widget contentFor(AppNav nav) {
   };
 }
 
-class _Shortcuts extends StatelessWidget {
+class _Shortcuts extends StatefulWidget {
   const _Shortcuts({required this.child});
 
   final Widget child;
+
+  @override
+  State<_Shortcuts> createState() => _ShortcutsState();
+}
+
+class _ShortcutsState extends State<_Shortcuts> {
+  static const seekStep = Duration(seconds: 5);
+
+  final _node = FocusNode(debugLabel: 'app keys');
+  AppServices? _app;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = AppScope.of(context);
+    if (app == _app) return;
+    _app?.focus.removeListener(_onFocusMode);
+    _app = app;
+    app.focus.addListener(_onFocusMode);
+  }
+
+  // Focus mode hides the search field, so its keys come back to the app.
+  void _onFocusMode() {
+    if (_app?.focus.isOn ?? false) _node.requestFocus();
+  }
+
+  @override
+  void dispose() {
+    _app?.focus.removeListener(_onFocusMode);
+    _node.dispose();
+    super.dispose();
+  }
+
+  void _seek(AppServices app, Duration by) {
+    final p = app.player;
+    final t = p.current;
+    if (t == null) return;
+    var to = p.position.value + by;
+    if (to < Duration.zero) to = Duration.zero;
+    final end = Duration(milliseconds: t.durationMs);
+    if (t.durationMs > 0 && to > end) to = end;
+    p.seek(to);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -112,20 +155,32 @@ class _Shortcuts extends StatelessWidget {
           const SingleActivator(LogicalKeyboardKey.f5): app.library.refresh,
           const SingleActivator(LogicalKeyboardKey.keyR, control: true):
               app.library.refresh,
-          const SingleActivator(LogicalKeyboardKey.escape): app.panel.close,
+          const SingleActivator(LogicalKeyboardKey.escape): () =>
+              app.focus.isOn ? app.focus.exit() : app.panel.close(),
         },
         child: Focus(
+          focusNode: _node,
           autofocus: true,
           onKeyEvent: (node, e) {
-            if (e is KeyDownEvent &&
-                e.logicalKey == LogicalKeyboardKey.space &&
-                FocusManager.instance.primaryFocus == node) {
+            // Only when nothing else (a text field, a focused button) has focus.
+            if (FocusManager.instance.primaryFocus != node) {
+              return KeyEventResult.ignored;
+            }
+            final down = e is KeyDownEvent;
+            final key = e.logicalKey;
+            if (down && key == LogicalKeyboardKey.space) {
               app.player.togglePlay();
+              return KeyEventResult.handled;
+            }
+            if ((down || e is KeyRepeatEvent) &&
+                (key == LogicalKeyboardKey.arrowLeft ||
+                    key == LogicalKeyboardKey.arrowRight)) {
+              _seek(app, key == LogicalKeyboardKey.arrowLeft ? -seekStep : seekStep);
               return KeyEventResult.handled;
             }
             return KeyEventResult.ignored;
           },
-          child: child,
+          child: widget.child,
         ),
       ),
     );

@@ -133,6 +133,29 @@ begin
   Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
+// 1.6.5+31 started this setup through a detached PowerShell that opened a
+// console window and never exited; close any such launcher left behind.
+procedure CloseStuckLaunchers;
+var
+  Locator, Services, Found, Item: Variant;
+  I: Integer;
+begin
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Services := Locator.ConnectServer('.', 'root\CIMV2');
+    Found := Services.ExecQuery('SELECT * FROM Win32_Process WHERE Name = ''powershell.exe'' ' +
+      'AND CommandLine LIKE ''%Win32[_]ProcessStartup%'' AND CommandLine LIKE ''%scglow-setup%''');
+    for I := 0 to Found.Count - 1 do
+    begin
+      Item := Found.ItemIndex(I);
+      Item.Terminate(0);
+      AppLog('closed a stuck updater launcher');
+    end;
+  except
+    Log('Could not look for stuck updater launchers: ' + GetExceptionMessage);
+  end;
+end;
+
 function InitializeSetup: Boolean;
 var
   Pid: Integer;
@@ -150,6 +173,7 @@ begin
       CloseHandle(H);
     end;
   end;
+  if WizardSilent then CloseStuckLaunchers;
 end;
 
 function WebView2Installed: Boolean;

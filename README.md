@@ -17,6 +17,7 @@ A personal desktop SoundCloud client for Windows, built with Flutter.
 - Fast search and sorting across likes; like and unlike tracks.
 - Play queue with drag-to-reorder, shuffle and repeat; resumes where you left off.
 - Track side panel with the queue, related tracks and timed comments.
+- Focus mode: click the cover in the player to show just the sharp cover over its blurred, beat-pulsing backdrop. The player and cursor hide after 2.5 s without mouse movement; Esc, the ✕ button or another click on the cover leave it. Space plays/pauses and ←/→ seek 5 s. The track panel opens with the button next to the cover.
 - Glass UI in dark and light themes. The current cover is shown as a soft blurred backdrop that can pulse to the beat (based on the track's waveform).
 - Windows integration: media keys and the system media overlay, a tray icon, and a single running instance.
 

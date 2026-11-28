@@ -55,7 +55,16 @@ class UpdateController extends ChangeNotifier {
   void Function(UpdateOffer offer)? onSilentOffer;
 
   UpdatePhase phase = UpdatePhase.idle;
-  UpdateOffer? offer;
+  UpdateOffer? _offer;
+
+  // The UI only ever sees strictly newer versions; the installer migration
+  // reinstalls the current one through [_offer] without advertising it.
+  UpdateOffer? get offer {
+    final o = _offer;
+    return o != null && o.version.compareTo(current) > 0 ? o : null;
+  }
+
+  set offer(UpdateOffer? value) => _offer = value;
   String? message;
   int? receivedBytes;
   int? totalBytes;
@@ -164,14 +173,21 @@ class UpdateController extends ChangeNotifier {
       return false;
     }
     _log('installer: portable copy in $dir, installing ${next.version.label}');
-    offer = next;
+    _offer = next;
     phase = UpdatePhase.ready;
     notifyListeners();
     await apply();
     final started = phase == UpdatePhase.applying;
-    // Retry on the next start when the download or launch failed; once the
-    // setup ran, a failed install must not loop on every start.
-    if (!started) await _prefs?.remove(migrationKey);
+    if (!started) {
+      // Retry on the next start when the download or launch failed; once the
+      // setup ran, a failed install must not loop on every start.
+      await _prefs?.remove(migrationKey);
+      _log('installer: move failed (${message ?? 'unknown'})');
+      _offer = null;
+      phase = UpdatePhase.idle;
+      message = null;
+      notifyListeners();
+    }
     return started;
   }
 
@@ -195,7 +211,7 @@ class UpdateController extends ChangeNotifier {
   }
 
   Future<void> apply() async {
-    final next = offer;
+    final next = _offer;
     if (next == null || phase == UpdatePhase.downloading || phase == UpdatePhase.applying) {
       return;
     }
@@ -434,8 +450,9 @@ Future<void> startWindowsUpdater({
 
 // WMI starts the process outside Flutter's job object, so TerminateProcess on
 // quit does not kill it (Process.start(detached) stayed in the job), and
-// ShowWindow=0 keeps any console hidden. The launcher itself runs detached so
-// it gets no console window either.
+// ShowWindow=0 keeps any console hidden. The launcher runs attached: Dart then
+// passes CREATE_NO_WINDOW, while a detached (DETACHED_PROCESS) PowerShell opens
+// its own console, which Windows Terminal shows and which never reported back.
 Future<void> startHiddenWindowsProcess(
   String commandLine, {
   Future<ProcessResult> Function(String exe, List<String> args)? run,
@@ -448,10 +465,12 @@ Future<void> startHiddenWindowsProcess(
       'ProcessStartupInformation = [CimInstance]\$si }; '
       'if (\$r.ReturnValue -ne 0) { [Console]::Error.WriteLine("Win32_Process.Create failed: \$(\$r.ReturnValue)"); exit 1 }; '
       '"started \$(\$r.ProcessId)"';
-  final runFn = run ?? _runDetached;
+  final runFn = run ?? _runHidden;
   final result = await runFn('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
+    '-InputFormat',
+    'None',
     '-ExecutionPolicy',
     'Bypass',
     '-Command',
@@ -465,15 +484,17 @@ Future<void> startHiddenWindowsProcess(
   DiagLog.write('update: ${result.stdout.toString().trim()}');
 }
 
-// detachedWithStdio has no exit code, so success is the "started" line.
-Future<ProcessResult> _runDetached(String exe, List<String> args) async {
-  final p = await Process.start(exe, args, mode: ProcessStartMode.detachedWithStdio);
+Future<ProcessResult> _runHidden(String exe, List<String> args) async {
+  final p = await Process.start(exe, args);
+  unawaited(p.stdin.close());
   final out = p.stdout.transform(const SystemEncoding().decoder).join();
   final err = p.stderr.transform(const SystemEncoding().decoder).join();
-  final stdout = await out.timeout(const Duration(seconds: 60), onTimeout: () => '');
-  final stderr = await err.timeout(const Duration(seconds: 5), onTimeout: () => '');
-  final ok = RegExp(r'^started \d+', multiLine: true).hasMatch(stdout);
-  return ProcessResult(p.pid, ok ? 0 : 1, stdout, ok || stderr.isNotEmpty ? stderr : 'no response');
+  final code = await p.exitCode.timeout(const Duration(seconds: 30), onTimeout: () {
+    p.kill();
+    return -1;
+  });
+  if (code == -1) return ProcessResult(p.pid, 1, '', 'the launcher timed out');
+  return ProcessResult(p.pid, code, await out, await err);
 }
 
 String powershellSingleQuote(String value) =>

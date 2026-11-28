@@ -104,6 +104,26 @@ class TrackPanel extends ChangeNotifier {
   }
 }
 
+class FocusMode extends ChangeNotifier {
+  bool _on = false;
+
+  bool get isOn => _on;
+
+  void enter() {
+    if (_on) return;
+    _on = true;
+    notifyListeners();
+  }
+
+  void exit() {
+    if (!_on) return;
+    _on = false;
+    notifyListeners();
+  }
+
+  void toggle() => _on ? exit() : enter();
+}
+
 class SnackMessage {
   SnackMessage(this.text, {this.action, this.onAction});
 

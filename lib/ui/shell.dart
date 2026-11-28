@@ -6,6 +6,7 @@ import '../app/update_controller.dart';
 import '../core/update_check.dart';
 import '../app/ui_state.dart';
 import 'cover_scene.dart';
+import 'focus_view.dart';
 import 'player_dock.dart';
 import 'theme/tokens.dart';
 import 'top_bar.dart';
@@ -16,10 +17,11 @@ import 'widgets/glass.dart';
 export 'top_bar.dart' show SearchFocus;
 
 class WindowFrame extends StatelessWidget {
-  const WindowFrame({super.key, required this.child, this.scene});
+  const WindowFrame({super.key, required this.child, this.scene, this.focus});
 
   final Widget child;
   final CoverScene? scene;
+  final Animation<double>? focus;
 
   @override
   Widget build(BuildContext context) {
@@ -40,7 +42,7 @@ class WindowFrame extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          CoverBackground(scene: scene),
+          CoverBackground(scene: scene, focus: focus),
           child,
         ],
       ),
@@ -380,8 +382,7 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell>
-    with SingleTickerProviderStateMixin {
+class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
   CoverScene? _scene;
   AppServices? _app;
   String? _offered;
@@ -393,9 +394,27 @@ class _AppShellState extends State<AppShell>
     parent: _anim,
     curve: Curves.easeOutCubic,
   );
+  late final AnimationController _focusAnim = AnimationController(
+    vsync: this,
+    duration: FocusGeo.enter,
+    reverseDuration: FocusGeo.exit,
+  );
+  late final Animation<double> _f = CurvedAnimation(
+    parent: _focusAnim,
+    curve: Curves.easeOutCubic,
+  );
+  // 1 while the capsule and the close button are shown in focus mode.
+  late final AnimationController _chrome = AnimationController(
+    vsync: this,
+    value: 1,
+  );
+  Timer? _idle;
+  bool _overBar = false, _pressingBar = false;
 
   bool get _wantOpen =>
       (_app?.panel.isOpen ?? false) && _app?.player.current != null;
+
+  bool get _reduce => MediaQuery.maybeDisableAnimationsOf(context) ?? false;
 
   @override
   void didChangeDependencies() {
@@ -412,28 +431,77 @@ class _AppShellState extends State<AppShell>
     if (app != _app) {
       _app?.panel.removeListener(_sync);
       _app?.player.removeListener(_sync);
+      _app?.focus.removeListener(_syncFocus);
       _app?.updates.onSilentOffer = null;
       _app = app;
       app.panel.addListener(_sync);
       app.player.addListener(_sync);
+      app.focus.addListener(_syncFocus);
       app.updates.onSilentOffer = _onSilentOffer;
       _anim.value = _wantOpen ? 1 : 0;
+      _focusAnim.value = app.focus.isOn ? 1 : 0;
     }
   }
 
   void _sync() {
     final app = _app;
     if (app == null) return;
-    if (app.panel.isOpen && app.player.current == null) app.panel.close();
+    if (app.player.current == null) {
+      if (app.panel.isOpen) app.panel.close();
+      app.focus.exit();
+    }
     final target = _wantOpen ? 1.0 : 0.0;
     if (_anim.value == target && !_anim.isAnimating) return;
-    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) {
+    if (_reduce) {
       _anim.value = target;
     } else if (target == 1) {
       _anim.forward();
     } else {
       _anim.reverse();
     }
+  }
+
+  void _syncFocus() {
+    final app = _app;
+    if (app == null) return;
+    final on = app.focus.isOn;
+    if (on && app.player.current == null) {
+      app.focus.exit();
+      return;
+    }
+    if (_reduce) {
+      _focusAnim.value = on ? 1 : 0;
+    } else if (on) {
+      _focusAnim.forward();
+    } else {
+      _focusAnim.reverse();
+    }
+    _showChrome(instant: true);
+  }
+
+  void _showChrome({bool instant = false}) {
+    _idle?.cancel();
+    if (instant || _reduce) {
+      _chrome.value = 1;
+    } else if (_chrome.value < 1) {
+      _chrome.animateTo(1, duration: FocusGeo.show);
+    }
+    if (_app?.focus.isOn ?? false) _idle = Timer(FocusGeo.idle, _hideChrome);
+  }
+
+  void _hideChrome() {
+    if (!mounted || !(_app?.focus.isOn ?? false)) return;
+    if (_overBar || _pressingBar) return;
+    if (_reduce) {
+      _chrome.value = 0;
+    } else {
+      _chrome.animateTo(0, duration: FocusGeo.hide);
+    }
+  }
+
+  void _onPointer(PointerEvent e) {
+    if (!(_app?.focus.isOn ?? false)) return;
+    _showChrome();
   }
 
   void _onSilentOffer(UpdateOffer offer) {
@@ -454,12 +522,28 @@ class _AppShellState extends State<AppShell>
 
   @override
   void dispose() {
+    _idle?.cancel();
     _app?.panel.removeListener(_sync);
     _app?.player.removeListener(_sync);
+    _app?.focus.removeListener(_syncFocus);
     _app?.updates.onSilentOffer = null;
     _anim.dispose();
+    _focusAnim.dispose();
+    _chrome.dispose();
     _scene?.dispose();
     super.dispose();
+  }
+
+  // Fades a layer out as focus mode comes in, shifted by [shift] dp.
+  // The tree shape stays the same at f == 0 so nothing below loses its state.
+  static Widget _recede(double f, double shift, Widget child) {
+    return IgnorePointer(
+      ignoring: f > 0,
+      child: Opacity(
+        opacity: 1 - f,
+        child: Transform.translate(offset: Offset(0, shift * f), child: child),
+      ),
+    );
   }
 
   @override
@@ -469,6 +553,7 @@ class _AppShellState extends State<AppShell>
     final content = ClipRect(child: widget.child);
     return WindowFrame(
       scene: _scene,
+      focus: _f,
       child: CoverSceneHost(
         scene: _scene!,
         child: PanelScope(
@@ -479,9 +564,23 @@ class _AppShellState extends State<AppShell>
               final panel = TrackPanelView(
                 narrow: size.width <= Dp.panelBreakpoint,
               );
-              final capsule = FloatingPlayer(
-                width: PlayerGeo.width(size.width),
+              final capsule = MouseRegion(
+                onEnter: (_) => _overBar = true,
+                onExit: (_) {
+                  _overBar = false;
+                  if (app.focus.isOn) _showChrome();
+                },
+                child: Listener(
+                  onPointerDown: (_) => _pressingBar = true,
+                  onPointerUp: (_) {
+                    _pressingBar = false;
+                    if (app.focus.isOn) _showChrome();
+                  },
+                  onPointerCancel: (_) => _pressingBar = false,
+                  child: FloatingPlayer(width: PlayerGeo.width(size.width)),
+                ),
               );
+              final bars = const TopBar();
               return ListenableBuilder(
                 listenable: app.nav,
                 builder: (context, _) {
@@ -489,62 +588,127 @@ class _AppShellState extends State<AppShell>
                       ? Dp.trackColumn
                       : Dp.column;
                   return AnimatedBuilder(
-                    animation: _t,
+                    animation: Listenable.merge([_t, _f, _chrome, app.focus]),
                     builder: (context, _) {
                       final g = PanelGeo(size, _t.value, maxColumn: maxCol);
                       final shown = _anim.value > 0;
-                      return Stack(
-                        children: [
-                          Column(
+                      final f = _f.value;
+                      final focusOn = app.focus.isOn;
+                      final chrome = focusOn || f > 0 ? _chrome.value : 1.0;
+                      final restBottom = Dp.playerBottom;
+                      final focusBottom =
+                          size.height - FocusGeo.barTop(size) - Dp.playerH;
+                      final hidden = focusOn && _chrome.value == 0;
+                      return MouseRegion(
+                        cursor: hidden ? SystemMouseCursors.none : MouseCursor.defer,
+                        child: Listener(
+                          behavior: HitTestBehavior.translucent,
+                          onPointerHover: _onPointer,
+                          onPointerMove: _onPointer,
+                          onPointerDown: _onPointer,
+                          child: Stack(
                             children: [
-                              const TopBar(),
-                              Expanded(
-                                child: Stack(
-                                  children: [
-                                    Positioned(
-                                      left: g.columnLeft - Dp.hPad,
-                                      width: g.columnInner + 2 * Dp.hPad,
-                                      top: 0,
-                                      bottom: Dp.contentBottom,
-                                      child: content,
+                              Column(
+                                children: [
+                                  _recede(f, -12, bars),
+                                  Expanded(
+                                    child: _recede(
+                                      f,
+                                      16,
+                                      Stack(
+                                        children: [
+                                          Positioned(
+                                            left: g.columnLeft - Dp.hPad,
+                                            width: g.columnInner + 2 * Dp.hPad,
+                                            top: 0,
+                                            bottom: Dp.contentBottom,
+                                            child: content,
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
-                          if (shown && g.overlay)
-                            Positioned(
-                              left: 0,
-                              right: 0,
-                              top: Dp.topBar,
-                              bottom: 0,
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTap: app.panel.close,
-                                child: ColoredBox(
-                                  color: c.panelScrim.withValues(
-                                    alpha: c.panelScrim.a * _t.value,
+                              if (shown && g.overlay)
+                                Positioned(
+                                  key: const ValueKey('panel-scrim'),
+                                  left: 0,
+                                  right: 0,
+                                  top: Dp.topBar,
+                                  bottom: 0,
+                                  child: _recede(
+                                    f,
+                                    0,
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: app.panel.close,
+                                      child: ColoredBox(
+                                        color: c.panelScrim.withValues(
+                                          alpha: c.panelScrim.a * _t.value,
+                                        ),
+                                      ),
+                                    ),
                                   ),
                                 ),
+                              if (shown)
+                                Positioned(
+                                  key: const ValueKey('panel'),
+                                  left: g.panelLeft,
+                                  top: g.panelTop,
+                                  width: g.panelWidth,
+                                  height: g.panelBottom - g.panelTop,
+                                  child: _recede(f, 0, panel),
+                                ),
+                              if (f > 0) ...[
+                                const Positioned(
+                                  key: ValueKey('focus-drag'),
+                                  left: 0,
+                                  right: 0,
+                                  top: 0,
+                                  height: Dp.topBar,
+                                  child: DragZone(),
+                                ),
+                                Positioned.fromRect(
+                                  key: const ValueKey('focus-art'),
+                                  rect: FocusGeo.cover(size),
+                                  child: IgnorePointer(
+                                    child: Opacity(
+                                      opacity: f,
+                                      child: FocusCover(
+                                        track: app.player.current,
+                                        side: FocusGeo.side(size),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                              Positioned(
+                                key: const ValueKey('capsule'),
+                                left: 0,
+                                right: 0,
+                                bottom: restBottom + (focusBottom - restBottom) * f,
+                                child: Center(
+                                  child: Opacity(opacity: chrome, child: capsule),
+                                ),
                               ),
-                            ),
-                          if (shown)
-                            Positioned(
-                              left: g.panelLeft,
-                              top: g.panelTop,
-                              width: g.panelWidth,
-                              height: g.panelBottom - g.panelTop,
-                              child: panel,
-                            ),
-                          Positioned(
-                            left: 0,
-                            right: 0,
-                            bottom: Dp.playerBottom,
-                            child: Center(child: capsule),
+                              if (f > 0)
+                                Positioned(
+                                  key: const ValueKey('focus-x'),
+                                  top: 10,
+                                  right: 12,
+                                  child: IgnorePointer(
+                                    ignoring: !focusOn || _chrome.value == 0,
+                                    child: Opacity(
+                                      opacity: f * chrome,
+                                      child: FocusCloseButton(onTap: app.focus.exit),
+                                    ),
+                                  ),
+                                ),
+                              const SnackbarHost(key: ValueKey('snackbar')),
+                            ],
                           ),
-                          const SnackbarHost(),
-                        ],
+                        ),
                       );
                     },
                   );

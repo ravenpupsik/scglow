@@ -484,6 +484,11 @@ void main() {
       expect(command, contains('ShowWindow = [uint16]0'));
       expect(command, contains('ProcessStartupInformation'));
       expect(command, contains('Win32_Process -MethodName Create'));
+      // A detached PowerShell opened its own console (shown by Windows
+      // Terminal) and never answered; it must not wait on stdin either.
+      expect(args, containsAllInOrder(['-InputFormat', 'None']));
+      final src = File('lib/app/update_controller.dart').readAsStringSync();
+      expect(src, isNot(contains('detachedWithStdio')));
       await expectLater(
         startHiddenWindowsProcess('x', run: (e, a) async => ProcessResult(0, 1, '', 'denied')),
         throwsA(isA<DownloadException>()),
@@ -564,6 +569,75 @@ void main() {
       // An installed copy never migrates.
       File('${install.path}${Platform.pathSeparator}$installerMarker').writeAsStringSync('1.6.5+31');
       expect(c.isInstalledCopy, isTrue);
+      expect(c.offer, isNull, reason: 'the reinstall of the same version is never advertised');
+    });
+
+    test('a failed move to the installer leaves no same-version offer behind', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+      final dir = Directory.systemTemp.createTempSync('upd6');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final install = Directory('${dir.path}${Platform.pathSeparator}portable')..createSync();
+      final work = Directory('${dir.path}${Platform.pathSeparator}work');
+      final body = utf8.encode('fake setup');
+      final release = _release(tag: 'v1.6.5+32', assets: [
+        {
+          'name': 'scglow-setup-1.6.5+32.exe',
+          'browser_download_url': 'https://example/scglow-setup-1.6.5+32.exe',
+          'digest': 'sha256:${sha256OfBytes(body)}',
+        }
+      ]);
+      final client = MockClient((req) async => req.url.path.endsWith('.exe')
+          ? http.Response.bytes(body, 200)
+          : http.Response(jsonEncode(release), 200));
+      var quit = false;
+      final c = UpdateController(
+        player: PlayerController(
+          backend: FakeBackend(),
+          resolveStream: (t, {bool preferProgressive = false}) async =>
+              const ResolvedStream(url: 'u', isPreview: false),
+          onAuthProblem: (_, _) {},
+        ),
+        window: WindowService(enabled: false)..beforeQuit = () async => quit = true,
+        prefs: prefs,
+        client: client,
+        current: const AppVersion(1, 6, 5, 32),
+        installDir: install.path,
+        tempDir: () async => work,
+        windows: true,
+        launchSetup: (path, args) async =>
+            throw const DownloadException("Couldn't start the updater: no response."),
+      );
+      expect(await c.migrateToInstaller(), isFalse);
+      expect(quit, isFalse);
+      expect(c.offer, isNull);
+      expect(c.phase, UpdatePhase.idle);
+      expect(c.message, isNull);
+      expect(prefs.getString(UpdateController.migrationKey), isNull);
+      // A strictly newer release is still offered by a normal check.
+      final newer = _release(tag: 'v1.6.6+33', assets: [
+        {
+          'name': 'scglow-setup-1.6.6+33.exe',
+          'browser_download_url': 'https://example/scglow-setup-1.6.6+33.exe',
+          'digest': 'sha256:${'a' * 64}',
+        }
+      ]);
+      final c2 = UpdateController(
+        player: PlayerController(
+          backend: FakeBackend(),
+          resolveStream: (t, {bool preferProgressive = false}) async =>
+              const ResolvedStream(url: 'u', isPreview: false),
+          onAuthProblem: (_, _) {},
+        ),
+        window: WindowService(enabled: false),
+        prefs: prefs,
+        client: MockClient((req) async => http.Response(jsonEncode(newer), 200)),
+        current: const AppVersion(1, 6, 5, 32),
+        installDir: install.path,
+        windows: true,
+      );
+      await c2.check();
+      expect(c2.offer?.version.label, '1.6.6+33');
     });
   });
 
@@ -577,6 +651,8 @@ void main() {
     expect(iss, contains('scglow.installed'));
     expect(iss, contains('{param:WAITPID|0}'));
     expect(iss, contains('{param:RELAUNCH|0}'));
+    expect(iss, contains('procedure CloseStuckLaunchers'));
+    expect(iss, contains('if WizardSilent then CloseStuckLaunchers;'));
     final identity = File('windows/runner/app_identity.h').readAsStringSync();
     final aumid = RegExp(r'#define AppUserModelId "([^"]+)"').firstMatch(iss)!.group(1)!;
     expect(identity, contains('L"$aumid"'));

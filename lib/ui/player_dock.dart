@@ -19,7 +19,9 @@ abstract final class PlayerGeo {
   static const coverX = 12.0;
   static const coverY = 8.0;
   static const transportY = 28.0;
-  static const textX = coverX + Dp.playerCover + 10;
+  static const panelBtn = 24.0;
+  static const panelX = coverX + Dp.playerCover + 4;
+  static const textX = panelX + panelBtn + 6;
 
   static const offsets = [-84.0, -47.0, 0.0, 47.0, 84.0];
 
@@ -68,8 +70,8 @@ class FloatingPlayer extends StatelessWidget {
           border: Border.all(color: c.rim),
         ),
         child: ListenableBuilder(
-          listenable:
-              Listenable.merge([player, app.library, app.details, app.panel]),
+          listenable: Listenable.merge(
+              [player, app.library, app.details, app.panel, app.focus]),
           builder: (context, _) {
             final track = player.current;
             final idle = track == null;
@@ -84,12 +86,7 @@ class FloatingPlayer extends StatelessWidget {
             final timeW = PlayerGeo.timeW(track?.durationMs ?? 0);
             final seekX = PlayerGeo.timeX + timeW + PlayerGeo.timeGap;
             final marks = idle ? const <int>[] : commentTimes(app, track);
-            return MouseRegion(
-              cursor: idle ? MouseCursor.defer : SystemMouseCursors.click,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: idle ? null : app.panel.toggle,
-                child: Stack(
+            return Stack(
                   clipBehavior: Clip.none,
                   children: [
                     Positioned(
@@ -97,8 +94,24 @@ class FloatingPlayer extends StatelessWidget {
                       top: PlayerGeo.coverY,
                       child: idle
                           ? const ArtPlaceholder(size: Dp.playerCover)
-                          : _CoverToggle(
-                              track: track, open: app.panel.isOpen),
+                          : _CoverToggle(track: track, on: app.focus.isOn),
+                    ),
+                    Positioned(
+                      left: PlayerGeo.panelX,
+                      top: PlayerGeo.coverY + (Dp.playerCover - PlayerGeo.panelBtn) / 2,
+                      child: PanelButton(
+                        open: app.panel.isOpen && !app.focus.isOn,
+                        onTap: idle
+                            ? null
+                            : () {
+                                if (app.focus.isOn) {
+                                  app.focus.exit();
+                                  app.panel.show();
+                                } else {
+                                  app.panel.toggle();
+                                }
+                              },
+                      ),
                     ),
                     Positioned(
                       left: PlayerGeo.textX,
@@ -213,8 +226,6 @@ class FloatingPlayer extends StatelessWidget {
                           player: player, idle: idle, position: false),
                     ),
                   ],
-                ),
-              ),
             );
           },
         ),
@@ -226,24 +237,24 @@ class FloatingPlayer extends StatelessWidget {
 }
 
 class _CoverToggle extends StatelessWidget {
-  const _CoverToggle({required this.track, required this.open});
+  const _CoverToggle({required this.track, required this.on});
 
   final Track track;
-  final bool open;
+  final bool on;
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final c = AgColors.of(context);
     return Interactive(
-      onTap: app.panel.toggle,
-      semanticLabel: open ? 'Hide track panel' : 'Show track panel',
+      onTap: app.focus.toggle,
+      semanticLabel: on ? 'Exit focus mode' : 'Focus mode',
       builder: (context, s) => FocusRing(
         show: s.focused,
         radius: Dp.rCover,
         child: Container(
           key: const ValueKey('capsule-cover'),
-          foregroundDecoration: open
+          foregroundDecoration: on
               ? BoxDecoration(
                   borderRadius: BorderRadius.circular(Dp.rCover),
                   border: Border.all(color: c.coverRim, width: 1.5),
@@ -256,6 +267,41 @@ class _CoverToggle extends StatelessWidget {
               artSize: ArtSize.t300),
         ),
       ),
+    );
+  }
+}
+
+class PanelButton extends StatelessWidget {
+  const PanelButton({super.key, required this.open, required this.onTap});
+
+  static const label = 'Track panel';
+
+  final bool open;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = AgColors.of(context);
+    return Interactive(
+      onTap: onTap,
+      tooltip: onTap == null ? null : label,
+      semanticLabel: onTap == null ? null : (open ? 'Hide track panel' : 'Show track panel'),
+      builder: (context, s) {
+        final col = onTap == null
+            ? c.disabled
+            : open || s.hovered
+                ? c.ink
+                : c.offIcon;
+        return FocusRing(
+          show: s.focused,
+          radius: Dp.rIconBtn,
+          child: SizedBox.square(
+            key: const ValueKey('panel-button'),
+            dimension: PlayerGeo.panelBtn,
+            child: Center(child: AgIcon(AgGlyph.panel, color: col, size: 20)),
+          ),
+        );
+      },
     );
   }
 }
