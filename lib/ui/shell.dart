@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../app/app_services.dart';
@@ -424,7 +426,7 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
     value: 1,
   );
   Timer? _idle;
-  bool _overBar = false, _pressingBar = false;
+  bool _pressingBar = false;
 
   bool get _wantOpen =>
       (_app?.panel.isOpen ?? false) && _app?.player.current != null;
@@ -460,15 +462,18 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
     _preload();
   }
 
-  // Decode the sharp cover for every new track, so entering Focus or
-  // switching tracks in it never waits on the network.
+  // Decode the sharp cover of the current and the next track, so entering
+  // Focus or switching tracks in it never waits on the network.
   void _preload() {
     final t = _app?.player.current;
     if (t == null || t.id == _preloaded) return;
     _preloaded = t.id;
-    final url = FocusGeo.artUrlOf(t);
-    if (url != null) {
-      precacheImage(FocusGeo.provider(url), context, onError: (_, _) {});
+    final next = _app?.player.upNext;
+    for (final track in [t, if (next != null && next.isNotEmpty) next.first]) {
+      final url = FocusGeo.artUrlOf(track);
+      if (url != null) {
+        precacheImage(FocusGeo.provider(url), context, onError: (_, _) {});
+      }
     }
   }
 
@@ -524,7 +529,7 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
 
   void _hideChrome() {
     if (!mounted || !(_app?.focus.isOn ?? false)) return;
-    if (_overBar || _pressingBar) return;
+    if (_pressingBar) return;
     if (_reduce) {
       _chrome.value = 0;
     } else {
@@ -584,65 +589,19 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
           child: LayoutBuilder(
             builder: (context, box) {
               final size = box.biggest;
-              final panel = _Recede(
-                animation: _f,
-                child: RepaintBoundary(
-                  child: TrackPanelView(narrow: size.width <= Dp.panelBreakpoint),
-                ),
+              final panel = RepaintBoundary(
+                child: TrackPanelView(narrow: size.width <= Dp.panelBreakpoint),
               );
               final lift = size.height -
                   FocusGeo.barTop(size) -
                   Dp.playerH -
                   Dp.playerBottom;
-              final capsule = _FocusChrome(
-                focus: _f,
-                chrome: _chrome,
-                lift: lift,
-                child: MouseRegion(
-                  onEnter: (_) => _overBar = true,
-                  onExit: (_) {
-                    _overBar = false;
-                    if (app.focus.isOn) _showChrome();
-                  },
-                  child: Listener(
-                    onPointerDown: (_) => _pressingBar = true,
-                    onPointerUp: (_) {
-                      _pressingBar = false;
-                      if (app.focus.isOn) _showChrome();
-                    },
-                    onPointerCancel: (_) => _pressingBar = false,
-                    child: FloatingPlayer(width: PlayerGeo.width(size.width)),
-                  ),
-                ),
-              );
+              final normalW = PlayerGeo.width(size.width);
+              final wideW = FocusGeo.barWidth(size.width, normalW);
               final top = _Recede(
                 animation: _f,
                 shift: -12,
                 child: const RepaintBoundary(child: TopBar()),
-              );
-              final cover = Positioned.fromRect(
-                key: const ValueKey('focus-art'),
-                rect: FocusGeo.cover(size),
-                child: IgnorePointer(
-                  child: FadeTransition(
-                    opacity: _f,
-                    child: FocusCover(
-                      player: app.player,
-                      side: FocusGeo.side(size),
-                    ),
-                  ),
-                ),
-              );
-              final close = Positioned(
-                key: const ValueKey('focus-x'),
-                top: 10,
-                right: 12,
-                child: _FocusChrome(
-                  focus: _f,
-                  chrome: _chrome,
-                  fade: true,
-                  child: FocusCloseButton(onTap: app.focus.exit),
-                ),
               );
               final drag = Positioned(
                 key: const ValueKey('focus-drag'),
@@ -668,6 +627,51 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
                     builder: (context, _) {
                       final g = PanelGeo(size, _t.value, maxColumn: maxCol);
                       final shown = _anim.value > 0;
+                      // With the panel open in Focus, the cover and the bar sit
+                      // in the middle of what is left of the window.
+                      final panelAt =
+                          PanelGeo(size, 1, maxColumn: maxCol).panelLeft;
+                      final (coverRect, coverScale) =
+                          FocusGeo.stage(size, panelAt, _t.value);
+                      final freeW =
+                          FocusGeo.freeWidth(size.width, panelAt, _t.value);
+                      final wideNow = math.min(
+                        wideW,
+                        math.max(Dp.playerMinW, freeW - 2 * FocusGeo.panelClear),
+                      );
+                      final cover = Positioned.fromRect(
+                        key: const ValueKey('focus-art'),
+                        rect: coverRect,
+                        child: IgnorePointer(
+                          child: FadeTransition(
+                            opacity: _f,
+                            child: Transform.scale(
+                              scale: coverScale,
+                              child: FocusCover(
+                                player: app.player,
+                                side: FocusGeo.side(size),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                      final capsule = _FocusCapsule(
+                        focus: _f,
+                        chrome: _chrome,
+                        lift: lift,
+                        dx: freeW / 2 - size.width / 2,
+                        normal: normalW,
+                        wide: wideNow,
+                        builder: (width) => Listener(
+                          onPointerDown: (_) => _pressingBar = true,
+                          onPointerUp: (_) {
+                            _pressingBar = false;
+                            if (app.focus.isOn) _showChrome();
+                          },
+                          onPointerCancel: (_) => _pressingBar = false,
+                          child: FloatingPlayer(width: width),
+                        ),
+                      );
                       return Stack(
                         children: [
                           Column(
@@ -736,7 +740,6 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
                               child: capsule,
                             ),
                           ),
-                          close,
                           const SnackbarHost(key: ValueKey('snackbar')),
                         ],
                       );
@@ -794,36 +797,42 @@ class _Recede extends StatelessWidget {
       );
 }
 
-// The capsule (lifted under the cover) and the close button (faded in) in
-// Focus, both hidden while the pointer rests.
-class _FocusChrome extends StatelessWidget {
-  const _FocusChrome({
+// The capsule in Focus: wider, lifted under the cover and slid to the middle
+// of the free area, and hidden while the pointer rests. Width and offset follow
+// the Focus animation; the hide only changes opacity.
+class _FocusCapsule extends StatelessWidget {
+  const _FocusCapsule({
     required this.focus,
     required this.chrome,
-    required this.child,
-    this.lift = 0,
-    this.fade = false,
+    required this.lift,
+    required this.dx,
+    required this.normal,
+    required this.wide,
+    required this.builder,
   });
 
   final Animation<double> focus, chrome;
-  final double lift;
-  final bool fade;
-  final Widget child;
+  final double lift, dx, normal, wide;
+  final Widget Function(double width) builder;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-        animation: Listenable.merge([focus, chrome]),
-        builder: (context, child) {
+        animation: focus,
+        builder: (context, _) {
           final f = focus.value;
-          final shown = f > 0 ? chrome.value : 1.0;
-          final opacity = fade ? f * shown : shown;
-          Widget out = Opacity(opacity: opacity, child: child);
-          if (lift != 0) {
-            out = Transform.translate(offset: Offset(0, -lift * f), child: out);
-          }
-          if (fade) out = IgnorePointer(ignoring: f <= 0 || chrome.value == 0, child: out);
-          return out;
+          final bar = builder(normal + (wide - normal) * f);
+          return Transform.translate(
+            offset: Offset(dx * f, -lift * f),
+            child: AnimatedBuilder(
+              animation: chrome,
+              builder: (context, child) => IgnorePointer(
+                // A hidden bar can neither catch clicks nor keep the cursor visible.
+                ignoring: f > 0 && chrome.value == 0,
+                child: Opacity(opacity: f > 0 ? chrome.value : 1.0, child: child),
+              ),
+              child: bar,
+            ),
+          );
         },
-        child: child,
       );
 }

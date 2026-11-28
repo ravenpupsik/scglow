@@ -13,6 +13,7 @@ import 'theme/tokens.dart';
 import 'widgets/art_image.dart';
 import 'widgets/icons.dart';
 import 'widgets/interactive.dart';
+import 'widgets/marquee_text.dart';
 import 'widgets/track_row.dart';
 
 abstract final class PlayerGeo {
@@ -84,21 +85,12 @@ class FloatingPlayer extends StatelessWidget {
             const g = PlayerGeo.guard;
             final transportL = mid + PlayerGeo.offsets.first - _btn / 2 - g;
             final transportR = mid + PlayerGeo.offsets.last + _btn / 2 + g;
-            void togglePanel() {
-              if (app.focus.isOn) {
-                app.focus.exit();
-                app.panel.show();
-              } else {
-                app.panel.toggle();
-              }
-            }
-
             return MouseRegion(
               cursor: idle ? MouseCursor.defer : SystemMouseCursors.click,
               child: GestureDetector(
                 key: const ValueKey('capsule-body'),
                 behavior: HitTestBehavior.opaque,
-                onTap: idle ? null : togglePanel,
+                onTap: idle ? null : app.panel.toggle,
                 child: Stack(
                   clipBehavior: Clip.none,
                   children: [
@@ -137,7 +129,7 @@ class FloatingPlayer extends StatelessWidget {
                       top: 9,
                       height: 36,
                       width: math.max(0.0, textRight - PlayerGeo.textX),
-                      child: _NowPlaying(track: track),
+                      child: _NowPlaying(track: track, marquee: app.focus.isOn),
                     ),
                     at(
                         0,
@@ -382,9 +374,12 @@ class ModeToggle extends StatelessWidget {
 }
 
 class _NowPlaying extends StatelessWidget {
-  const _NowPlaying({required this.track});
+  const _NowPlaying({required this.track, required this.marquee});
 
   final Track? track;
+
+  // In Focus a title that still does not fit scrolls while hovered.
+  final bool marquee;
 
   @override
   Widget build(BuildContext context) {
@@ -412,10 +407,8 @@ class _NowPlaying extends StatelessWidget {
           child: Row(
             children: [
               Flexible(
-                child: Text(track.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AgType.ui(13, c.ink, weight: 600)),
+                child: MarqueeText(track.title,
+                    enabled: marquee, style: AgType.ui(13, c.ink, weight: 600)),
               ),
               const SizedBox(width: 2),
               GestureDetector(
@@ -443,10 +436,8 @@ class _NowPlaying extends StatelessWidget {
           height: 18,
           child: Align(
             alignment: Alignment.centerLeft,
-            child: Text(track.artist,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AgType.ui(12, c.artist)),
+            child: MarqueeText(track.artist,
+                enabled: marquee, style: AgType.ui(12, c.artist)),
           ),
         ),
       ],

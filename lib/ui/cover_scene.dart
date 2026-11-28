@@ -237,6 +237,7 @@ class CoverArt {
     required this.url,
     required this.spot,
     required this.bright,
+    required this.glow,
     this.dominant,
     this.palette = const [],
   });
@@ -244,6 +245,10 @@ class CoverArt {
   final String url;
 
   final ui.Image spot, bright;
+
+  // A more heavily blurred copy for the halo under the Focus cover; its
+  // opaque body is FocusGeo.haloBody of the image and the edge is feathered.
+  final ui.Image glow;
   final Color? dominant;
   final List<Color> palette;
 
@@ -310,39 +315,59 @@ class CoverArt {
   }
 
   static const inset = 0.06, corner = 0.12, featherSigma = 0.025;
+  static const glowSigma = 7.0, glowOut = 128, glowFeather = 0.07;
 
   // Pixel work runs in a background isolate, so a track change never costs a
   // frame on the UI thread; only the GPU upload happens here.
   static Future<CoverArt> build(String url, Uint8List rgba64) async {
-    final (blurred, dominant, palette) = await Isolate.run(() {
+    final (blurred, wide, dominant, palette) = await Isolate.run(() {
       final d = CoverColor.dominant(rgba64, source);
       final p = CoverColor.palette(rgba64, source);
-      return (blur(rgba64, source), d?.toARGB32(), [for (final c in p) c.toARGB32()]);
+      return (
+        blur(rgba64, source),
+        blur(rgba64, source, sigma: glowSigma),
+        d?.toARGB32(),
+        [for (final c in p) c.toARGB32()],
+      );
     });
-    final small = Completer<ui.Image>();
-    ui.decodeImageFromPixels(
-      blurred,
-      source,
-      source,
-      ui.PixelFormat.rgba8888,
-      small.complete,
-    );
-    final img = await small.future;
+    Future<ui.Image> upload(Uint8List px) {
+      final done = Completer<ui.Image>();
+      ui.decodeImageFromPixels(px, source, source, ui.PixelFormat.rgba8888, done.complete);
+      return done.future;
+    }
+
+    final img = await upload(blurred);
     final spot = await _feathered(img, 1);
     final bright = await _feathered(img, brightGain);
     img.dispose();
+    final wideImg = await upload(wide);
+    final glow = await _feathered(
+      wideImg,
+      1,
+      out: glowOut,
+      inset: (1 - FocusGeo.haloBody) / 2,
+      feather: glowFeather,
+    );
+    wideImg.dispose();
     return CoverArt(
       url: url,
       spot: spot,
       bright: bright,
+      glow: glow,
       dominant: dominant == null ? null : Color(dominant),
       palette: [for (final v in palette) Color(v)],
     );
   }
 
-  static Future<ui.Image> _feathered(ui.Image small, double gain) {
-    const s = out * 1.0;
-    const rect = Rect.fromLTWH(0, 0, s, s);
+  static Future<ui.Image> _feathered(
+    ui.Image small,
+    double gain, {
+    int out = out,
+    double inset = inset,
+    double feather = featherSigma,
+  }) {
+    final s = out * 1.0;
+    final rect = Rect.fromLTWH(0, 0, s, s);
     final rec = ui.PictureRecorder();
     final canvas = Canvas(rec, rect)..saveLayer(rect, Paint());
     final paint = Paint()..filterQuality = FilterQuality.medium;
@@ -368,7 +393,7 @@ class CoverArt {
         RRect.fromRectAndRadius(inner, Radius.circular(inner.width * corner)),
         Paint()
           ..color = Colors.white
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * featherSigma),
+          ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * feather),
       )
       ..restore()
       ..restore();
@@ -668,9 +693,12 @@ class CoverScene {
 
   final _done = <String, CoverArt>{};
   String? _artUrl;
+  String? _warmUrl;
   int? _waveId;
   ImageStream? _stream;
   ImageStreamListener? _listener;
+  ImageStream? _warmStream;
+  ImageStreamListener? _warmListener;
   bool _disposed = false;
 
   void _sync() {
@@ -685,7 +713,52 @@ class CoverScene {
       _waveId = t?.id;
       wave.value = null;
       if (t != null && waveforms != null) unawaited(_loadWave(t));
+      _warm(_nextArtUrl());
     }
+  }
+
+  String? _nextArtUrl() {
+    final next = player.upNext;
+    if (next.isEmpty) return null;
+    final u = next.first.artworkUrl;
+    return u == null || isDefaultArt(u) ? null : u;
+  }
+
+  // Builds the next track's art ahead of time, so the backdrop and the cover
+  // halo have their colours ready the moment the track changes.
+  void _warm(String? url) {
+    if (url == _warmUrl) return;
+    _dropWarm();
+    _warmUrl = url;
+    if (url == null || url == _artUrl || _done.containsKey(url)) return;
+    final base = ArtCache.override?.call(url) ?? CachedArt(url);
+    final stream = ResizeImage(
+      base,
+      width: CoverArt.source,
+      height: CoverArt.source,
+    ).resolve(ImageConfiguration.empty);
+    _warmListener = ImageStreamListener((info, _) async {
+      _dropWarm();
+      final data = await info.image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      final w = info.image.width, h = info.image.height;
+      info.dispose();
+      if (_disposed || data == null) return;
+      if (w != CoverArt.source || h != CoverArt.source) return;
+      final result = await CoverArt.build(url, data.buffer.asUint8List());
+      if (!_disposed) _remember(url, result);
+    }, onError: (_, _) {});
+    _warmStream = stream..addListener(_warmListener!);
+  }
+
+  void _dropWarm() {
+    if (_warmListener != null) _warmStream?.removeListener(_warmListener!);
+    _warmStream = null;
+    _warmListener = null;
+  }
+
+  void _remember(String url, CoverArt art) {
+    if (_done.length >= 8) _done.remove(_done.keys.first);
+    _done[url] = art;
   }
 
   Future<void> _loadWave(Track t) async {
@@ -739,8 +812,7 @@ class CoverScene {
         if (w != CoverArt.source || h != CoverArt.source) return;
         final result = await CoverArt.build(url, data.buffer.asUint8List());
         if (_disposed) return;
-        if (_done.length >= 8) _done.remove(_done.keys.first);
-        _done[url] = result;
+        _remember(url, result);
         if (_artUrl == url) art.value = result;
       },
       onError: (_, _) {
@@ -760,6 +832,7 @@ class CoverScene {
     _disposed = true;
     player.removeListener(_sync);
     _stopStream();
+    _dropWarm();
     art.dispose();
     wave.dispose();
     pulse.dispose();
@@ -1002,7 +1075,11 @@ class CoverBackground extends StatelessWidget {
               children: [
                 TweenAnimationBuilder<Color?>(
                   tween: ColorTween(end: tint),
-                  duration: const Duration(milliseconds: 600),
+                  // Covered by the backdrop in Focus, so it jumps there instead
+                  // of repainting the full-window wash for 600 ms.
+                  duration: app.focus.isOn
+                      ? Duration.zero
+                      : const Duration(milliseconds: 600),
                   builder: (context, color, _) => RepaintBoundary(
                     child: CustomPaint(
                       painter: WashPainter(
@@ -1058,7 +1135,7 @@ class CoverBackground extends StatelessWidget {
               animation: g,
               builder: (context, child) =>
                   g.value <= 0 ? const SizedBox.shrink() : child!,
-              child: FocusGlow(art: s.art.value, visible: g, pulse: s.pulse),
+              child: FocusBackdrop(art: s.art.value, visible: g, pulse: s.pulse),
             ),
           ],
         );

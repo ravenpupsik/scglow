@@ -155,8 +155,14 @@ class _ShortcutsState extends State<_Shortcuts> {
           const SingleActivator(LogicalKeyboardKey.f5): app.library.refresh,
           const SingleActivator(LogicalKeyboardKey.keyR, control: true):
               app.library.refresh,
-          const SingleActivator(LogicalKeyboardKey.escape): () =>
-              app.focus.isOn ? app.focus.exit() : app.panel.close(),
+          // In Focus the first Esc closes the track panel, the next one Focus.
+          const SingleActivator(LogicalKeyboardKey.escape): () {
+            if (app.panel.isOpen) {
+              app.panel.close();
+            } else {
+              app.focus.exit();
+            }
+          },
         },
         child: Focus(
           focusNode: _node,

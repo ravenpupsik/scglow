@@ -17,7 +17,6 @@ import 'previews/preview_test.dart' as pv;
 import 'support/finders.dart';
 
 final _cover = find.byKey(const ValueKey('capsule-cover'));
-final _x = find.byKey(const ValueKey('focus-close'));
 final _sharp = find.byKey(const ValueKey('focus-cover'));
 
 double _opacityAbove(WidgetTester tester, Finder f) => tester
@@ -78,9 +77,12 @@ void _expectInSync(WidgetTester tester, pv.Harness h, String step) {
   expect(bar, findsOneWidget, reason: '$step: bar shows ${t.title}');
   expect(_shownSharpUrl(tester), artUrl(t.artworkUrl, ArtSize.t500), reason: '$step: sharp cover');
   expect(_scene(tester).art.value?.url, t.artworkUrl, reason: '$step: backdrop art');
-  final glow = tester.widget<FocusGlow>(find.byType(FocusGlow));
-  expect(glow.art?.url, t.artworkUrl, reason: '$step: glow palette');
-  expect(glow.art?.palette, isNotEmpty);
+  final backdrop = tester.widget<FocusBackdrop>(find.byType(FocusBackdrop));
+  expect(backdrop.art?.url, t.artworkUrl, reason: '$step: backdrop palette');
+  expect(backdrop.art?.palette, isNotEmpty);
+  final halo = tester.widget<RawImage>(
+      find.descendant(of: find.byKey(const ValueKey('focus-halo')), matching: find.byType(RawImage)).last);
+  expect(halo.image, same(backdrop.art!.glow), reason: '$step: halo is the current track\'s');
   expect(h.services.focus.isOn, isTrue, reason: '$step: focus stays open');
 }
 
@@ -96,14 +98,15 @@ void main() {
     await pv.loadFonts();
   });
 
-  testWidgets('cover click enters and leaves focus; Esc and × leave it', (tester) async {
+  testWidgets('cover click enters and leaves focus; Esc leaves it; there is no ✕', (tester) async {
     final h = await _boot(tester);
     expect(_sharpOpacity(tester), 0);
     await _enter(tester);
     expect(h.services.focus.isOn, isTrue);
     expect(_sharpOpacity(tester), 1);
     expect(_opacityAbove(tester, find.byType(NavTabs)), 0);
-    expect(_opacityAbove(tester, _x), 1);
+    expect(find.byKey(const ValueKey('focus-close')), findsNothing);
+    expect(find.byKey(const ValueKey('focus-x')), findsNothing);
 
     await tester.tap(_cover);
     await tester.pump();
@@ -120,11 +123,6 @@ void main() {
     await pv.settle(tester);
     expect(h.services.focus.isOn, isFalse);
 
-    await _enter(tester);
-    await tester.tap(_x);
-    await pv.settle(tester);
-    expect(h.services.focus.isOn, isFalse);
-    expect(_opacityAbove(tester, _x), 0);
   });
 
   testWidgets('enter and leave 10 times in a row, mid-animation too', (tester) async {
@@ -145,29 +143,81 @@ void main() {
     expect(_opacityAbove(tester, find.byType(NavTabs)), 1);
   });
 
-  testWidgets('focus hides the open panel and brings it back afterwards', (tester) async {
+  testWidgets('panel open in focus: cover and bar centre in the free area; Esc closes the panel first',
+      (tester) async {
+    const size = Size(1920, 1080);
+    final h = await _boot(tester);
+    await _enter(tester);
+    expect(tester.getRect(_sharp).center.dx, closeTo(size.width / 2, 0.5));
+    expect(tester.getRect(find.byType(FloatingPlayer)).center.dx, closeTo(size.width / 2, 0.5));
+
+    // Open the panel from the bar: Focus stays.
+    final box = tester.getRect(find.byType(FloatingPlayer));
+    await tester.tapAt(Offset(box.right - 6, box.top + 4));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    final mid = tester.getRect(_sharp).center.dx;
+    expect(mid, lessThan(size.width / 2), reason: 'it glides, not jumps');
+    await pv.settle(tester);
+    expect(h.services.focus.isOn, isTrue);
+    expect(h.services.panel.isOpen, isTrue);
+    final panelLeft = PanelGeo(size, 1).panelLeft;
+    final free = FocusGeo.freeWidth(size.width, panelLeft, 1);
+    expect(free, lessThan(size.width));
+    final cover = tester.getRect(_sharp);
+    final bar = tester.getRect(find.byType(FloatingPlayer));
+    expect(cover.center.dx, closeTo(free / 2, 0.5));
+    expect(bar.center.dx, closeTo(free / 2, 0.5));
+    expect(cover.right, lessThan(panelLeft), reason: 'clear of the panel');
+    expect(bar.right, lessThan(panelLeft));
+    final panel = tester.getRect(find.byType(TrackPanelView));
+    expect(panel.left, greaterThanOrEqualTo(cover.right));
+    expect(find.byType(TrackPanelView), findsOneWidget, reason: 'the panel stays in focus');
+
+    // Esc: the panel first, Focus second.
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await pv.settle(tester);
+    expect(h.services.panel.isOpen, isFalse);
+    expect(h.services.focus.isOn, isTrue, reason: 'one Esc is one step');
+    expect(tester.getRect(_sharp).center.dx, closeTo(size.width / 2, 0.5));
+    expect(tester.getRect(find.byType(FloatingPlayer)).center.dx, closeTo(size.width / 2, 0.5));
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await pv.settle(tester);
+    expect(h.services.focus.isOn, isFalse);
+    expect(h.services.panel.isOpen, isFalse);
+  });
+
+  testWidgets('Esc with the panel open and Focus on: panel, then Focus, in two presses',
+      (tester) async {
     final h = await _boot(tester);
     h.services.panel.show();
     await pv.settle(tester);
     await _enter(tester);
-    expect(_opacityAbove(tester, find.byType(TrackPanelView)), 0);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
     await pv.settle(tester);
-    expect(h.services.panel.isOpen, isTrue);
-    expect(_opacityAbove(tester, find.byType(TrackPanelView)), 1);
+    expect(h.services.panel.isOpen, isFalse);
+    expect(h.services.focus.isOn, isTrue);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await pv.settle(tester);
+    expect(h.services.focus.isOn, isFalse);
   });
 
-  testWidgets('empty capsule space in focus leaves focus and opens the panel', (tester) async {
+  testWidgets('empty capsule space in focus opens the panel and stays in focus', (tester) async {
     final h = await _boot(tester);
     await _enter(tester);
     final box = tester.getRect(find.byType(FloatingPlayer));
     await tester.tapAt(Offset(box.right - 6, box.top + 4));
     await pv.settle(tester);
-    expect(h.services.focus.isOn, isFalse);
+    expect(h.services.focus.isOn, isTrue);
     expect(h.services.panel.isOpen, isTrue);
+    final moved = tester.getRect(find.byType(FloatingPlayer));
+    await tester.tapAt(Offset(moved.right - 6, moved.top + 4));
+    await pv.settle(tester);
+    expect(h.services.panel.isOpen, isFalse);
+    expect(h.services.focus.isOn, isTrue);
   });
 
-  testWidgets('bar and cursor hide after 2.5 s still, come back on movement', (tester) async {
+  testWidgets('bar and cursor hide after 3 s still, come back on movement', (tester) async {
     final h = await _boot(tester);
     final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
     addTearDown(mouse.removePointer);
@@ -175,14 +225,13 @@ void main() {
     await tester.pump();
     await _enter(tester);
     await mouse.moveTo(const Offset(220, 300));
-    await tester.pump(const Duration(milliseconds: 2400));
-    expect(_barOpacity(tester), 1);
+    await tester.pump(const Duration(milliseconds: 2900));
+    expect(_barOpacity(tester), 1, reason: 'still up before 3 s');
     await tester.pump(const Duration(milliseconds: 150));
     await tester.pump(const Duration(milliseconds: 150));
     expect(_barOpacity(tester), inExclusiveRange(0, 1), reason: 'fading over 300 ms');
     await tester.pump(const Duration(milliseconds: 200));
     expect(_barOpacity(tester), 0);
-    expect(_opacityAbove(tester, _x), 0, reason: '× hides with the bar');
     expect(RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
         SystemMouseCursors.none);
 
@@ -194,9 +243,21 @@ void main() {
     expect(RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
         isNot(SystemMouseCursors.none));
 
+    // A pointer resting on the bar hides it too, and the cursor goes with it.
     await mouse.moveTo(tester.getCenter(find.byType(FloatingPlayer)));
-    await tester.pump(const Duration(seconds: 4));
-    expect(_barOpacity(tester), 1, reason: 'resting on the capsule keeps it up');
+    await tester.pump(const Duration(milliseconds: 3100));
+    await tester.pump(FocusGeo.hide);
+    await tester.pump();
+    expect(_barOpacity(tester), 0, reason: 'resting on the capsule does not keep it up');
+    expect(RendererBinding.instance.mouseTracker.debugDeviceActiveCursor(1),
+        SystemMouseCursors.none);
+    await tester.pump(const Duration(seconds: 5));
+    expect(_barOpacity(tester), 0, reason: 'it stays hidden, no flicker');
+
+    await mouse.moveTo(tester.getCenter(find.byType(FloatingPlayer)) + const Offset(3, 0));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(_barOpacity(tester), 1);
 
     final seek = tester.getRect(find.byType(SeekLine));
     await mouse.moveTo(seek.center);
@@ -206,32 +267,38 @@ void main() {
     await tester.pump(const Duration(seconds: 4));
     expect(_barOpacity(tester), 1, reason: 'a slider drag keeps it up');
     await mouse.up();
-    await tester.pump(const Duration(milliseconds: 2600));
+    await tester.pump(const Duration(milliseconds: 3100));
     await tester.pump(FocusGeo.hide);
     await tester.pump();
     expect(_barOpacity(tester), 0);
     expect(h.services.focus.isOn, isTrue);
   });
 
-  testWidgets('cover 440–480, at most the window height minus 260; group centred', (tester) async {
-    expect(FocusGeo.side(const Size(1920, 1080)), closeTo(475.2, 0.01));
-    expect(FocusGeo.side(const Size(2560, 1440)), 480);
-    expect(FocusGeo.side(const Size(1280, 800)), 440);
-    expect(FocusGeo.side(const Size(1000, 600)), 340);
+  testWidgets('cover 480–520, at most the window height minus 240; bar a third of the way down',
+      (tester) async {
+    expect(FocusGeo.side(const Size(1920, 1080)), 520);
+    expect(FocusGeo.side(const Size(2560, 1440)), 520);
+    expect(FocusGeo.side(const Size(1280, 800)), 480);
+    expect(FocusGeo.side(const Size(1000, 600)), 360);
     expect(FocusGeo.side(const Size(400, 900)), 240);
-    for (final size in const [Size(1920, 1080), Size(1000, 600)]) {
+    for (final size in const [Size(1920, 1080), Size(1280, 800), Size(1000, 600)]) {
       await _boot(tester, size: size);
       await _enter(tester);
       final rect = tester.getRect(_sharp);
       final side = FocusGeo.side(size);
       expect(rect.width, closeTo(side, 0.5), reason: '$size');
+      expect(side, lessThanOrEqualTo(size.height - 240), reason: '$size');
       expect(rect.center.dx, closeTo(size.width / 2, 0.5));
       final bar = tester.getRect(find.byType(FloatingPlayer));
-      expect(bar.top - rect.bottom, closeTo(FocusGeo.barGap, 0.5), reason: '$size');
-      expect((rect.top + bar.bottom) / 2, closeTo(size.height / 2, 0.5),
-          reason: 'cover and bar centred together, $size');
+      expect(bar.top - rect.bottom, closeTo((size.height - rect.bottom) / 3, 0.5),
+          reason: 'the bar is a third of the way down, $size');
+      expect(rect.top, closeTo(size.height - bar.bottom, 0.5),
+          reason: 'equal air above the cover and under the bar, $size');
       expect(bar.bottom, lessThanOrEqualTo(size.height), reason: 'the bar always fits');
+      expect(bar.width, closeTo(FocusGeo.barWidth(size.width, PlayerGeo.width(size.width)), 0.01));
+      expect(bar.width, greaterThanOrEqualTo(PlayerGeo.width(size.width)));
     }
+    expect(FocusGeo.barWidth(1920, 720), 880, reason: 'wider than the 720 dp bar outside Focus');
   });
 
   testWidgets('Space and arrows work in focus, not inside the search field', (tester) async {
@@ -287,8 +354,10 @@ void main() {
     expect(h.services.focus.isOn, isTrue);
   });
 
-  testWidgets('focus backdrop: the square spot dissolves, palette spots drift', (tester) async {
+  testWidgets('focus backdrop: the square spot dissolves, palette spots drift, grain on top',
+      (tester) async {
     final h = await _boot(tester);
+    await tester.runAsync(GrainTexture.load);
     await _enter(tester);
     await _waitInSync(tester, h);
     final spot = find.descendant(
@@ -301,14 +370,111 @@ void main() {
           .reduce((a, b) => a < b ? a : b);
       expect(min, 0, reason: 'the blurred square is fully faded');
     }
-    expect(find.byKey(const ValueKey('focus-glow')), findsOneWidget);
-    Offset spotAt() => tester.getCenter(find.byKey(const ValueKey('glow-spot-0')));
+    expect(find.byKey(const ValueKey('focus-backdrop')), findsOneWidget);
+    Offset spotAt() => tester.getCenter(find.byKey(const ValueKey('backdrop-spot-0')));
     final a = spotAt();
     await tester.pump(const Duration(seconds: 2));
     final b = spotAt();
     expect((a - b).distance, greaterThan(4), reason: 'colours flow');
     await tester.pump(const Duration(seconds: 8));
     expect((spotAt() - a).distance, lessThan(1), reason: 'one cycle is 10 s');
+
+    expect(GrainTexture.alpha / 255, closeTo(0.03, 0.005));
+    expect(GrainTexture.image, isNotNull, reason: 'the noise tile is generated once');
+    final grain = find.byKey(const ValueKey('backdrop-grain'));
+    expect(grain, findsOneWidget);
+    expect(find.ancestor(of: grain, matching: find.byType(RepaintBoundary)), findsWidgets);
+    final layer = tester.getTopLeft(find.byKey(const ValueKey('focus-backdrop')));
+    expect(tester.getSize(grain), tester.getSize(find.byKey(const ValueKey('focus-backdrop'))));
+    expect(layer, Offset.zero);
+  });
+
+  testWidgets('halo: a blurred copy 15% larger at 60%, under the sharp cover', (tester) async {
+    final h = await _boot(tester);
+    await _enter(tester);
+    await _waitInSync(tester, h);
+    final side = tester.getRect(_sharp).width;
+    final halo = find.descendant(
+        of: find.byKey(const ValueKey('focus-halo')), matching: find.byType(RawImage));
+    expect(halo, findsOneWidget);
+    final raw = tester.widget<RawImage>(halo);
+    expect(raw.color?.a, closeTo(FocusGeo.haloAlpha, 0.01));
+    expect(raw.colorBlendMode, BlendMode.modulate);
+    expect(raw.image, same(_scene(tester).art.value!.glow), reason: 'built once with the track art');
+    final body = tester.getSize(halo).width * FocusGeo.haloBody;
+    expect(body / side, closeTo(FocusGeo.halo, 0.01));
+    expect(tester.getRect(halo).center, tester.getRect(_sharp).center);
+    // Painted first, so the cover stays sharp on top of it.
+    final stack = find.ancestor(of: _sharp, matching: find.byType(Stack)).first;
+    final kids = tester.widget<Stack>(stack).children;
+    expect(kids.first.runtimeType.toString(), '_Halo');
+  });
+
+  testWidgets('cover switch: two covers cross-fade over 600 ms, keyed by track', (tester) async {
+    final h = await _boot(tester);
+    await _enter(tester);
+    await _waitInSync(tester, h);
+    final first = _shownSharpUrl(tester);
+    expect(FocusGeo.swap, const Duration(milliseconds: 600));
+    final switcher = tester.widget<AnimatedSwitcher>(
+        find.descendant(of: _sharp, matching: find.byType(AnimatedSwitcher)).first);
+    expect(switcher.duration, FocusGeo.swap);
+
+    final id = h.services.player.current!.id;
+    await tester.tap(byLabel('Next'));
+    // Step in small slices so the check lands inside the 600 ms switch.
+    var want = first;
+    for (var i = 0; i < 400 && want == first; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await tester.pump(const Duration(milliseconds: 16));
+      final cur = h.services.player.current!;
+      if (cur.id != id && _shownSharpUrl(tester) == artUrl(cur.artworkUrl, ArtSize.t500)) {
+        want = _shownSharpUrl(tester);
+      }
+    }
+    expect(want, isNot(first));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    final images = find.descendant(
+        of: _sharp,
+        matching: find.byWidgetPredicate(
+            (w) => w is Image && (w.key as ValueKey?)?.value.toString().startsWith('focus-image|') == true));
+    expect(images, findsNWidgets(2), reason: 'old and new cover are both up mid-switch');
+    final fades = find
+        .descendant(of: _sharp, matching: find.byType(FadeTransition))
+        .evaluate()
+        .map((e) => (e.widget as FadeTransition).opacity.value)
+        .toList();
+    expect(fades.any((v) => v > 0 && v < 1), isTrue, reason: 'the new cover fades in: $fades');
+    await tester.pump(FocusGeo.swap);
+    await tester.pump();
+    expect(images, findsOneWidget);
+    expect(_shownSharpUrl(tester), want);
+  });
+
+  testWidgets('backdrop switch: two ready layers fade over 600 ms, no square spot repaint',
+      (tester) async {
+    final h = await _boot(tester);
+    await _enter(tester);
+    await _waitInSync(tester, h);
+    final layers = find.byKey(const ValueKey('focus-backdrop'));
+    expect(layers, findsOneWidget);
+    final before = _scene(tester).art.value!.url;
+    await tester.tap(byLabel('Next'));
+    for (var i = 0; i < 400 && _scene(tester).art.value!.url == before; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(layers, findsNWidgets(2), reason: 'both layers are built and ready');
+    final fade = tester.widgetList<FadeTransition>(find.ancestor(
+        of: layers.last, matching: find.byType(FadeTransition)));
+    expect(fade.any((f) => f.opacity.value > 0 && f.opacity.value < 1), isTrue,
+        reason: '${fade.map((f) => f.opacity.value).toList()}');
+    await tester.pump(FocusGeo.swap);
+    await tester.pump();
+    expect(layers, findsOneWidget);
   });
 
   testWidgets('regression: focus cover and backdrop follow every track change', (tester) async {
