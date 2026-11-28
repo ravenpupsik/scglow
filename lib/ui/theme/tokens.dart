@@ -98,49 +98,46 @@ class AgColors extends ThemeExtension<AgColors> {
 
   Color get coverRim => ink.withValues(alpha: 0.5);
 
-  Color get cardGlass => isNight
-      ? const Color.fromARGB(140, 18, 18, 22)
-      : const Color.fromARGB(128, 255, 255, 255);
+  Color get cardGlass =>
+      isNight ? const Color.fromARGB(140, 18, 18, 22) : const Color.fromARGB(128, 255, 255, 255);
 
-  Color get washBase =>
-      isNight ? const Color(0xFF121317) : const Color(0xFFE4E4EA);
-  Color get washDot => isNight
-      ? const Color.fromARGB(16, 255, 255, 255)
-      : const Color.fromARGB(18, 26, 26, 30);
+  // The main-screen wash and the Focus mode base share this dark colour.
+  static const nightWash = Color(0xFF121317);
+
+  Color get washBase => isNight ? nightWash : const Color(0xFFE4E4EA);
+  Color get washDot =>
+      isNight ? const Color.fromARGB(16, 255, 255, 255) : const Color.fromARGB(18, 26, 26, 30);
 
   static double lstar(Color c) {
     double lin(double v) =>
         v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
     final y = 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
-    return y > 0.008856
-        ? 116 * math.pow(y, 1 / 3).toDouble() - 16
-        : 903.3 * y;
+    return y > 0.008856 ? 116 * math.pow(y, 1 / 3).toDouble() - 16 : 903.3 * y;
   }
 
   List<BoxShadow> get pillShadows => [
-        BoxShadow(color: pillShadow, blurRadius: 16, offset: const Offset(0, 3)),
-      ];
+    BoxShadow(color: pillShadow, blurRadius: 16, offset: const Offset(0, 3)),
+  ];
   List<BoxShadow> get cardShadows => [
-        BoxShadow(color: cardShadow, blurRadius: 16, offset: const Offset(0, 3)),
-      ];
+    BoxShadow(color: cardShadow, blurRadius: 16, offset: const Offset(0, 3)),
+  ];
   List<BoxShadow> get menuShadows => [
-        BoxShadow(color: menuShadow, blurRadius: 12, offset: const Offset(0, 3)),
-      ];
+    BoxShadow(color: menuShadow, blurRadius: 12, offset: const Offset(0, 3)),
+  ];
   List<BoxShadow> get dialogShadows => [
-        BoxShadow(color: dialogShadow, blurRadius: 12, offset: const Offset(0, 3)),
-      ];
+    BoxShadow(color: dialogShadow, blurRadius: 12, offset: const Offset(0, 3)),
+  ];
   List<BoxShadow> get liftShadows => [
-        BoxShadow(color: liftShadow, blurRadius: 12, offset: const Offset(0, 4)),
-      ];
+    BoxShadow(color: liftShadow, blurRadius: 12, offset: const Offset(0, 4)),
+  ];
 
   BoxDecoration card({Color? fill, double radius = Dp.rCard}) => BoxDecoration(
-        color: fill ?? glass,
-        borderRadius: BorderRadius.circular(radius),
-        border: Border.all(color: rim),
-      );
+    color: fill ?? glass,
+    borderRadius: BorderRadius.circular(radius),
+    border: Border.all(color: rim),
+  );
 
-  BoxDecoration tile({double radius = Dp.rButton}) =>
-      card(fill: glassTile, radius: radius);
+  BoxDecoration tile({double radius = Dp.rButton}) => card(fill: glassTile, radius: radius);
 
   static const light = AgColors(
     bg: Color(0xFFE4E4EA),
@@ -272,8 +269,7 @@ class AgColors extends ThemeExtension<AgColors> {
     isNight: true,
   );
 
-  static AgColors of(BuildContext context) =>
-      Theme.of(context).extension<AgColors>()!;
+  static AgColors of(BuildContext context) => Theme.of(context).extension<AgColors>()!;
 
   @override
   AgColors copyWith() => this;
@@ -357,20 +353,18 @@ abstract final class Dp {
 }
 
 abstract final class AgType {
-  static TextStyle ui(double size, Color color, {int weight = 400}) =>
-      TextStyle(
-        fontFamily: 'Inter',
-        fontSize: size,
-        fontWeight: _nearest(weight),
-        fontVariations: [FontVariation('wght', weight.toDouble())],
-        color: color,
-        height: 1.2,
-        letterSpacing: 0,
-      );
+  static TextStyle ui(double size, Color color, {int weight = 400}) => TextStyle(
+    fontFamily: 'Inter',
+    fontSize: size,
+    fontWeight: _nearest(weight),
+    fontVariations: [FontVariation('wght', weight.toDouble())],
+    color: color,
+    height: 1.2,
+    letterSpacing: 0,
+  );
 
   static TextStyle tnum(double size, Color color, {int weight = 500}) =>
-      ui(size, color, weight: weight)
-          .copyWith(fontFeatures: const [FontFeature.tabularFigures()]);
+      ui(size, color, weight: weight).copyWith(fontFeatures: const [FontFeature.tabularFigures()]);
 
   static TextStyle doto(double size, Color color) {
     assert(size >= 20, 'Doto is only used from 20 dp');
@@ -384,8 +378,7 @@ abstract final class AgType {
     );
   }
 
-  static FontWeight _nearest(int w) =>
-      FontWeight.values[((w / 100).round() - 1).clamp(0, 8)];
+  static FontWeight _nearest(int w) => FontWeight.values[((w / 100).round() - 1).clamp(0, 8)];
 }
 
 ThemeData buildTheme(AgColors c) {

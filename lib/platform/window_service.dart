@@ -20,6 +20,9 @@ class WindowService with WindowListener {
 
   VoidCallback? onShown;
 
+  // The window became visible again (start, show from tray, restore, focus).
+  VoidCallback? onVisible;
+
   Future<void> init({required Color background}) async {
     if (!enabled) return;
     await windowManager.ensureInitialized();
@@ -39,6 +42,7 @@ class WindowService with WindowListener {
     });
     windowManager.addListener(this);
     maximized.value = await windowManager.isMaximized();
+    onVisible?.call();
   }
 
   void startDrag() {
@@ -70,6 +74,7 @@ class WindowService with WindowListener {
     await windowManager.focus();
     active.value = true;
     onShown?.call();
+    onVisible?.call();
   }
 
   Future<void> quit() async {
@@ -88,6 +93,7 @@ class WindowService with WindowListener {
   void onWindowFocus() {
     active.value = true;
     onFocus?.call();
+    onVisible?.call();
   }
 
   @override
@@ -108,6 +114,7 @@ class WindowService with WindowListener {
   @override
   void onWindowRestore() async {
     onShown?.call();
+    onVisible?.call();
     maximized.value = await windowManager.isMaximized();
   }
 }

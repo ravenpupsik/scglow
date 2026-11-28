@@ -50,7 +50,9 @@ class WindowFrame extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          CoverBackground(scene: scene, focus: focus, glow: glow),
+          RepaintBoundary(
+            child: CoverBackground(scene: scene, focus: focus, glow: glow),
+          ),
           child,
         ],
       ),
@@ -446,6 +448,8 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
       );
     }
     if (app != _app) {
+      _coverCache = null;
+      _barCache = null;
       _app?.panel.removeListener(_sync);
       _app?.player.removeListener(_sync);
       _app?.focus.removeListener(_syncFocus);
@@ -542,6 +546,35 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
     _showChrome();
   }
 
+  // The cover and the bar are rebuilt only when their size changes, not on
+  // every frame of the panel animation that moves them.
+  (double, Widget)? _coverCache;
+  (double, Widget)? _barCache;
+
+  Widget _focusCover(AppServices app, double side) {
+    final hit = _coverCache;
+    if (hit != null && hit.$1 == side) return hit.$2;
+    final w = FocusCover(player: app.player, side: side);
+    _coverCache = (side, w);
+    return w;
+  }
+
+  Widget _bar(AppServices app, double width) {
+    final hit = _barCache;
+    if (hit != null && hit.$1 == width) return hit.$2;
+    final w = Listener(
+      onPointerDown: (_) => _pressingBar = true,
+      onPointerUp: (_) {
+        _pressingBar = false;
+        if (_app?.focus.isOn ?? false) _showChrome();
+      },
+      onPointerCancel: (_) => _pressingBar = false,
+      child: RepaintBoundary(child: FloatingPlayer(width: width)),
+    );
+    _barCache = (width, w);
+    return w;
+  }
+
   void _onSilentOffer(UpdateOffer offer) {
     if (_offered == offer.version.label) return;
     _offered = offer.version.label;
@@ -623,33 +656,47 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
                       ? Dp.trackColumn
                       : Dp.column;
                   final body = AnimatedBuilder(
-                    animation: _t,
+                    // Focus on/off switches the bar width once.
+                    animation: Listenable.merge([_t, app.focus]),
                     builder: (context, _) {
                       final g = PanelGeo(size, _t.value, maxColumn: maxCol);
                       final shown = _anim.value > 0;
+                      // Everything below only moves with the panel and Focus
+                      // animations; sizes are fixed for the whole animation, so
+                      // nothing relayouts per frame.
+                      final listOpen =
+                          shown || _anim.status == AnimationStatus.forward;
+                      final listInner = g.listInner(open: listOpen);
+                      final listRest = g.listRestLeft(listInner);
                       // With the panel open in Focus, the cover and the bar sit
                       // in the middle of what is left of the window.
                       final panelAt =
                           PanelGeo(size, 1, maxColumn: maxCol).panelLeft;
+                      final (restRect, _) = FocusGeo.stage(size, panelAt, 0);
                       final (coverRect, coverScale) =
                           FocusGeo.stage(size, panelAt, _t.value);
                       final freeW =
                           FocusGeo.freeWidth(size.width, panelAt, _t.value);
-                      final wideNow = math.min(
-                        wideW,
-                        math.max(Dp.playerMinW, freeW - 2 * FocusGeo.panelClear),
-                      );
+                      final freeEnd = FocusGeo.freeWidth(
+                          size.width, panelAt, _wantOpen ? 1 : 0);
+                      final barW = app.focus.isOn
+                          ? math.min(
+                              wideW,
+                              math.max(Dp.playerMinW,
+                                  freeEnd - 2 * FocusGeo.panelClear),
+                            )
+                          : normalW;
                       final cover = Positioned.fromRect(
                         key: const ValueKey('focus-art'),
-                        rect: coverRect,
+                        rect: restRect,
                         child: IgnorePointer(
                           child: FadeTransition(
                             opacity: _f,
-                            child: Transform.scale(
-                              scale: coverScale,
-                              child: FocusCover(
-                                player: app.player,
-                                side: FocusGeo.side(size),
+                            child: Transform.translate(
+                              offset: Offset(coverRect.left - restRect.left, 0),
+                              child: Transform.scale(
+                                scale: coverScale,
+                                child: _focusCover(app, FocusGeo.side(size)),
                               ),
                             ),
                           ),
@@ -660,17 +707,7 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
                         chrome: _chrome,
                         lift: lift,
                         dx: freeW / 2 - size.width / 2,
-                        normal: normalW,
-                        wide: wideNow,
-                        builder: (width) => Listener(
-                          onPointerDown: (_) => _pressingBar = true,
-                          onPointerUp: (_) {
-                            _pressingBar = false;
-                            if (app.focus.isOn) _showChrome();
-                          },
-                          onPointerCancel: (_) => _pressingBar = false,
-                          child: FloatingPlayer(width: width),
-                        ),
+                        bar: _bar(app, barW),
                       );
                       return Stack(
                         children: [
@@ -684,11 +721,16 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
                                   child: Stack(
                                     children: [
                                       Positioned(
-                                        left: g.columnLeft - Dp.hPad,
-                                        width: g.columnInner + 2 * Dp.hPad,
+                                        key: const ValueKey('list-column'),
+                                        left: listRest - Dp.hPad,
+                                        width: listInner + 2 * Dp.hPad,
                                         top: 0,
                                         bottom: Dp.contentBottom,
-                                        child: content,
+                                        child: Transform.translate(
+                                          offset: Offset(
+                                              g.listLeft(listInner) - listRest, 0),
+                                          child: content,
+                                        ),
                                       ),
                                     ],
                                   ),
@@ -708,10 +750,9 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
                                 child: GestureDetector(
                                   behavior: HitTestBehavior.opaque,
                                   onTap: app.panel.close,
-                                  child: ColoredBox(
-                                    color: c.panelScrim.withValues(
-                                      alpha: c.panelScrim.a * _t.value,
-                                    ),
+                                  child: FadeTransition(
+                                    opacity: _t,
+                                    child: ColoredBox(color: c.panelScrim),
                                   ),
                                 ),
                               ),
@@ -719,11 +760,14 @@ class _AppShellState extends State<AppShell> with TickerProviderStateMixin {
                           if (shown)
                             Positioned(
                               key: const ValueKey('panel'),
-                              left: g.panelLeft,
+                              left: g.panelOpenLeft,
                               top: g.panelTop,
                               width: g.panelWidth,
                               height: g.panelBottom - g.panelTop,
-                              child: panel,
+                              child: Transform.translate(
+                                offset: Offset(g.panelLeft - g.panelOpenLeft, 0),
+                                child: panel,
+                              ),
                             ),
                           drag,
                           cover,
@@ -797,30 +841,27 @@ class _Recede extends StatelessWidget {
       );
 }
 
-// The capsule in Focus: wider, lifted under the cover and slid to the middle
-// of the free area, and hidden while the pointer rests. Width and offset follow
-// the Focus animation; the hide only changes opacity.
+// The capsule in Focus: lifted under the cover and slid to the middle of the
+// free area, and hidden while the pointer rests. Only its offset and opacity
+// follow the animations; its width is set once per state, never per frame.
 class _FocusCapsule extends StatelessWidget {
   const _FocusCapsule({
     required this.focus,
     required this.chrome,
     required this.lift,
     required this.dx,
-    required this.normal,
-    required this.wide,
-    required this.builder,
+    required this.bar,
   });
 
   final Animation<double> focus, chrome;
-  final double lift, dx, normal, wide;
-  final Widget Function(double width) builder;
+  final double lift, dx;
+  final Widget bar;
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
         animation: focus,
-        builder: (context, _) {
+        builder: (context, child) {
           final f = focus.value;
-          final bar = builder(normal + (wide - normal) * f);
           return Transform.translate(
             offset: Offset(dx * f, -lift * f),
             child: AnimatedBuilder(
@@ -830,9 +871,10 @@ class _FocusCapsule extends StatelessWidget {
                 ignoring: f > 0 && chrome.value == 0,
                 child: Opacity(opacity: f > 0 ? chrome.value : 1.0, child: child),
               ),
-              child: bar,
+              child: child,
             ),
           );
         },
+        child: bar,
       );
 }

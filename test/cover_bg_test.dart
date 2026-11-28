@@ -405,6 +405,9 @@ void main() {
         expect(spots(), findsOneWidget, reason: '$r');
       }
 
+      Color tintOf(Element e) =>
+          ((e.widget as CustomPaint).painter as WashPainter).tint;
+      final oldTint = tintOf(washes().evaluate().single);
       unawaited(h.services.player.next());
       await tester.pump();
       for (
@@ -420,8 +423,15 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(spots(), findsNWidgets(2), reason: 'crossfading');
+      // The wash is two ready layers, never an in-between colour per frame.
+      final tints = washes().evaluate().map(tintOf).toList();
+      expect(tints, hasLength(2));
+      expect(tints.first, oldTint);
+      expect(tints.last, isNot(oldTint));
       await tester.pump(const Duration(milliseconds: 350));
       expect(spots(), findsOneWidget);
+      expect(washes(), findsOneWidget);
+      expect(tintOf(washes().evaluate().single), tints.last);
 
       h.services.tint.set(false);
       await pv.settle(tester);

@@ -14,6 +14,7 @@ import '../core/models.dart';
 import '../core/sc_api.dart';
 import '../core/storage.dart';
 import '../core/web_session.dart';
+import '../platform/taskbar_buttons.dart';
 import '../platform/window_service.dart';
 import '../player/audio_backend.dart';
 import '../player/media_controls.dart';
@@ -40,6 +41,8 @@ class AppServices {
     this.onLogout,
     this.waveforms,
     this.waveformUrlOf,
+    this.taskbarButtons = false,
+    this.taskbarApply,
     UpdateController? updates,
   }) : updates = updates ??
             UpdateController(
@@ -56,6 +59,18 @@ class AppServices {
   final WindowService window;
   final WebSession? web;
   final TrayService? tray;
+
+  // Previous / play-pause / next in the taskbar thumbnail preview.
+  final bool taskbarButtons;
+  final SetTaskbarButtons? taskbarApply;
+  late final TaskbarButtons? taskbar = taskbarButtons
+      ? TaskbarButtons(
+          onPrevious: () => unawaited(player.previous()),
+          onToggle: () => unawaited(player.togglePlay()),
+          onNext: () => unawaited(player.next()),
+          apply: taskbarApply,
+        )
+      : null;
   final SharedPreferences? prefs;
   final Future<void> Function()? onLogout;
 
@@ -127,6 +142,21 @@ class AppServices {
             window.quit();
         }
       };
+    }
+    final tb = taskbar;
+    if (tb != null) {
+      void sync() => unawaited(
+          tb.update(playing: player.playing, hasTrack: player.current != null));
+      player.addListener(sync);
+      sync();
+      window.onVisible = () => unawaited(tb.reapply());
+      if (Platform.isWindows) {
+        // The taskbar button may not exist yet right after start; Windows
+        // ignores thumbnail buttons added before it does.
+        for (final s in const [1, 4]) {
+          Timer(Duration(seconds: s), () => unawaited(tb.reapply()));
+        }
+      }
     }
     window.onFocus = () {
       if (session.state == SessionState.ready) {
@@ -209,6 +239,7 @@ class AppServices {
       window: window,
       web: web,
       tray: TrayService(),
+      taskbarButtons: Platform.isWindows,
       prefs: prefs,
       updates: UpdateController(
         player: player,

@@ -54,71 +54,7 @@ abstract final class CoverColor {
       b += c[2];
     }
     final n = use.length;
-    return Color.fromARGB(
-      255,
-      (r / n).round(),
-      (g / n).round(),
-      (b / n).round(),
-    );
-  }
-
-  // Two or three distinct colours of the cover, most prominent first, for the
-  // Focus backdrop. Weighted by area and saturation; near-duplicates merge.
-  static List<Color> palette(Uint8List rgba, int size, {int count = 3}) {
-    if (size < 16 || rgba.length < size * size * 4) return const [];
-    final buckets = <int, List<double>>{};
-    for (var i = 0; i < size * size; i++) {
-      final r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
-      final (h, s, l) = _rgbToHsl((r, g, b));
-      if (l < 0.06 || l > 0.96) continue;
-      final hb = s < 0.12 ? 12 : (h * 12).floor() % 12;
-      final lb = (l * 3).floor().clamp(0, 2);
-      final key = hb * 3 + lb;
-      final w = 0.25 + s;
-      final e = buckets.putIfAbsent(key, () => [0, 0, 0, 0]);
-      e[0] += r * w;
-      e[1] += g * w;
-      e[2] += b * w;
-      e[3] += w;
-    }
-    final ranked = buckets.values.toList()..sort((a, b) => b[3].compareTo(a[3]));
-    final out = <Color>[];
-    for (final e in ranked) {
-      final c = Color.fromARGB(255, (e[0] / e[3]).round(), (e[1] / e[3]).round(),
-          (e[2] / e[3]).round());
-      if (out.every((o) => _distance(o, c) > 40)) out.add(c);
-      if (out.length == count) break;
-    }
-    if (out.isEmpty) return const [];
-    final (h, s, l) = _rgbToHsl(_rgb(out.first));
-    while (out.length < 2) {
-      final rgb = _hslToRgb(h, s, (l * 0.45).clamp(0.05, 1.0));
-      out.add(Color.fromARGB(255, rgb.$1, rgb.$2, rgb.$3));
-    }
-    return out;
-  }
-
-  static double _distance(Color a, Color b) {
-    final (l1, a1, b1) = _rgbToLab(_rgb(a));
-    final (l2, a2, b2) = _rgbToLab(_rgb(b));
-    return math.sqrt((l1 - l2) * (l1 - l2) + (a1 - a2) * (a1 - a2) + (b1 - b2) * (b1 - b2)) *
-        2.55;
-  }
-
-  // A palette colour toned for the full-window Focus backdrop: rich but never
-  // glaring behind the sharp cover.
-  static Color glow(Color c, {required bool night}) {
-    final (h, s, l) = _rgbToHsl(_rgb(c));
-    final ss = math.min(s, 0.78);
-    final ll = night ? l.clamp(0.16, 0.42) : l.clamp(0.55, 0.80);
-    final rgb = _hslToRgb(h, ss, ll);
-    return Color.fromARGB(255, rgb.$1, rgb.$2, rgb.$3);
-  }
-
-  static Color glowBase(Color c, {required bool night}) {
-    final (h, s, l) = _rgbToHsl(_rgb(c));
-    final rgb = _hslToRgb(h, math.min(s, 0.6), night ? 0.07 + 0.06 * l : 0.86 + 0.06 * l);
-    return Color.fromARGB(255, rgb.$1, rgb.$2, rgb.$3);
+    return Color.fromARGB(255, (r / n).round(), (g / n).round(), (b / n).round());
   }
 
   static Color windowTint(Color cover, {required bool night}) {
@@ -194,17 +130,14 @@ abstract final class CoverColor {
   static (double, double, double) _rgbToLab((int, int, int) c) {
     double lin(int v) {
       final x = v / 255;
-      return x <= 0.04045
-          ? x / 12.92
-          : math.pow((x + 0.055) / 1.055, 2.4).toDouble();
+      return x <= 0.04045 ? x / 12.92 : math.pow((x + 0.055) / 1.055, 2.4).toDouble();
     }
 
     final r = lin(c.$1), g = lin(c.$2), b = lin(c.$3);
     final x = r * 0.4124564 + g * 0.3575761 + b * 0.1804375;
     final y = r * 0.2126729 + g * 0.7151522 + b * 0.0721750;
     final z = r * 0.0193339 + g * 0.1191920 + b * 0.9503041;
-    double f(double t) =>
-        t > 0.008856 ? math.pow(t, 1 / 3).toDouble() : 7.787 * t + 16 / 116;
+    double f(double t) => t > 0.008856 ? math.pow(t, 1 / 3).toDouble() : 7.787 * t + 16 / 116;
     final fx = f(x / _wx), fy = f(y), fz = f(z / _wz);
     return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz));
   }
@@ -218,9 +151,7 @@ abstract final class CoverColor {
 
     final x = inv(fx) * _wx, y = inv(fy), z = inv(fz) * _wz;
     int enc(double c) {
-      final v = c <= 0.0031308
-          ? 12.92 * c
-          : 1.055 * math.pow(c, 1 / 2.4) - 0.055;
+      final v = c <= 0.0031308 ? 12.92 * c : 1.055 * math.pow(c, 1 / 2.4) - 0.055;
       return (v.clamp(0.0, 1.0) * 255).round();
     }
 
@@ -239,7 +170,6 @@ class CoverArt {
     required this.bright,
     required this.glow,
     this.dominant,
-    this.palette = const [],
   });
 
   final String url;
@@ -250,7 +180,6 @@ class CoverArt {
   // opaque body is FocusGeo.haloBody of the image and the edge is feathered.
   final ui.Image glow;
   final Color? dominant;
-  final List<Color> palette;
 
   static const source = 64;
 
@@ -317,87 +246,128 @@ class CoverArt {
   static const inset = 0.06, corner = 0.12, featherSigma = 0.025;
   static const glowSigma = 7.0, glowOut = 128, glowFeather = 0.07;
 
-  // Pixel work runs in a background isolate, so a track change never costs a
-  // frame on the UI thread; only the GPU upload happens here.
+  // Blur, upscale and the rounded-rect feather all run in an isolate.
+  // The UI thread only uploads the finished pixels (no Picture.toImage).
   static Future<CoverArt> build(String url, Uint8List rgba64) async {
-    final (blurred, wide, dominant, palette) = await Isolate.run(() {
+    final (spotPx, brightPx, glowPx, dominant) = await Isolate.run(() {
       final d = CoverColor.dominant(rgba64, source);
-      final p = CoverColor.palette(rgba64, source);
+      final blurred = blur(rgba64, source);
+      final wide = blur(rgba64, source, sigma: glowSigma);
       return (
-        blur(rgba64, source),
-        blur(rgba64, source, sigma: glowSigma),
+        feather(blurred, source, out),
+        feather(blurred, source, out, gain: brightGain),
+        feather(wide, source, glowOut, inset: (1 - FocusGeo.haloBody) / 2, feather: glowFeather),
         d?.toARGB32(),
-        [for (final c in p) c.toARGB32()],
       );
     });
-    Future<ui.Image> upload(Uint8List px) {
+    Future<ui.Image> upload(Uint8List px, int size) {
       final done = Completer<ui.Image>();
-      ui.decodeImageFromPixels(px, source, source, ui.PixelFormat.rgba8888, done.complete);
+      ui.decodeImageFromPixels(px, size, size, ui.PixelFormat.rgba8888, done.complete);
       return done.future;
     }
 
-    final img = await upload(blurred);
-    final spot = await _feathered(img, 1);
-    final bright = await _feathered(img, brightGain);
-    img.dispose();
-    final wideImg = await upload(wide);
-    final glow = await _feathered(
-      wideImg,
-      1,
-      out: glowOut,
-      inset: (1 - FocusGeo.haloBody) / 2,
-      feather: glowFeather,
-    );
-    wideImg.dispose();
+    // The halo first, so Focus can fade it in without waiting on the wash spots.
+    final glow = await upload(glowPx, glowOut);
+    final spot = await upload(spotPx, out);
+    final bright = await upload(brightPx, out);
     return CoverArt(
       url: url,
       spot: spot,
       bright: bright,
       glow: glow,
       dominant: dominant == null ? null : Color(dominant),
-      palette: [for (final v in palette) Color(v)],
     );
   }
 
-  static Future<ui.Image> _feathered(
-    ui.Image small,
-    double gain, {
-    int out = out,
+  // Bilinear scale of a square image, then a blurred rounded-rect alpha mask.
+  static Uint8List feather(
+    Uint8List src,
+    int srcSize,
+    int out, {
+    double gain = 1,
     double inset = inset,
     double feather = featherSigma,
   }) {
-    final s = out * 1.0;
-    final rect = Rect.fromLTWH(0, 0, s, s);
-    final rec = ui.PictureRecorder();
-    final canvas = Canvas(rec, rect)..saveLayer(rect, Paint());
-    final paint = Paint()..filterQuality = FilterQuality.medium;
-    if (gain != 1) {
-      paint.colorFilter = ColorFilter.matrix(<double>[
-        gain, 0, 0, 0, 0,
-        0, gain, 0, 0, 0,
-        0, 0, gain, 0, 0,
-        0, 0, 0, 1, 0,
-      ]);
+    final dst = Uint8List(out * out * 4);
+    if (out <= 1 || srcSize <= 0) return dst;
+    final scale = (srcSize - 1) / (out - 1);
+    for (var y = 0; y < out; y++) {
+      final fy = y * scale;
+      final y0 = fy.floor();
+      final y1 = math.min(y0 + 1, srcSize - 1);
+      final ty = fy - y0;
+      for (var x = 0; x < out; x++) {
+        final fx = x * scale;
+        final x0 = fx.floor();
+        final x1 = math.min(x0 + 1, srcSize - 1);
+        final tx = fx - x0;
+        int ch(int xx, int yy, int c) => src[(yy * srcSize + xx) * 4 + c];
+        double lerp(int c) {
+          final a = ch(x0, y0, c) * (1 - tx) + ch(x1, y0, c) * tx;
+          final b = ch(x0, y1, c) * (1 - tx) + ch(x1, y1, c) * tx;
+          return a * (1 - ty) + b * ty;
+        }
+
+        final o = (y * out + x) * 4;
+        dst[o] = (lerp(0) * gain).round().clamp(0, 255);
+        dst[o + 1] = (lerp(1) * gain).round().clamp(0, 255);
+        dst[o + 2] = (lerp(2) * gain).round().clamp(0, 255);
+        dst[o + 3] = 255;
+      }
     }
-    canvas.drawImageRect(
-      small,
-      Rect.fromLTWH(0, 0, small.width.toDouble(), small.height.toDouble()),
-      rect,
-      paint,
+    final pad = out * inset;
+    final inner = math.max(0.0, out - 2 * pad);
+    final radius = inner * corner;
+    final mask = Float64List(out * out);
+    final left = pad, top = pad, right = out - pad, bottom = out - pad;
+    final cx = (left + right) / 2, cy = (top + bottom) / 2;
+    final hw = (right - left) / 2, hh = (bottom - top) / 2;
+    for (var y = 0; y < out; y++) {
+      for (var x = 0; x < out; x++) {
+        final dx = (x + 0.5 - cx).abs() - (hw - radius);
+        final dy = (y + 0.5 - cy).abs() - (hh - radius);
+        final ox = math.max(dx, 0.0), oy = math.max(dy, 0.0);
+        final sd = math.sqrt(ox * ox + oy * oy) + math.min(math.max(dx, dy), 0.0) - radius;
+        mask[y * out + x] = sd < 0 ? 1.0 : 0.0;
+      }
+    }
+    _blurChannel(mask, out, out * feather);
+    for (var i = 0; i < out * out; i++) {
+      dst[i * 4 + 3] = (255 * mask[i].clamp(0.0, 1.0)).round();
+    }
+    return dst;
+  }
+
+  static void _blurChannel(Float64List src, int size, double sigma) {
+    if (sigma <= 0 || size <= 0) return;
+    final r = (sigma * 3).ceil();
+    final k = List<double>.generate(
+      2 * r + 1,
+      (i) => math.exp(-((i - r) * (i - r)) / (2 * sigma * sigma)),
     );
-    final inner = rect.deflate(s * inset);
-    canvas
-      // A separate dstIn layer also clears pixels outside the rounded square.
-      ..saveLayer(rect, Paint()..blendMode = BlendMode.dstIn)
-      ..drawRRect(
-        RRect.fromRectAndRadius(inner, Radius.circular(inner.width * corner)),
-        Paint()
-          ..color = Colors.white
-          ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * feather),
-      )
-      ..restore()
-      ..restore();
-    return rec.endRecording().toImage(out, out);
+    final sum = k.reduce((a, b) => a + b);
+    for (var i = 0; i < k.length; i++) {
+      k[i] /= sum;
+    }
+    final tmp = Float64List(size * size);
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        var a = 0.0;
+        for (var j = -r; j <= r; j++) {
+          a += src[y * size + (x + j).clamp(0, size - 1)] * k[j + r];
+        }
+        tmp[y * size + x] = a;
+      }
+    }
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        var a = 0.0;
+        for (var j = -r; j <= r; j++) {
+          a += tmp[(y + j).clamp(0, size - 1) * size + x] * k[j + r];
+        }
+        src[y * size + x] = a;
+      }
+    }
   }
 }
 
@@ -419,9 +389,7 @@ class WaveformCache {
     final path = u.path.endsWith('.png')
         ? '${u.path.substring(0, u.path.length - 4)}.json'
         : u.path;
-    return path.endsWith('.json')
-        ? Uri(scheme: 'https', host: u.host, path: path)
-        : null;
+    return path.endsWith('.json') ? Uri(scheme: 'https', host: u.host, path: path) : null;
   }
 
   static List<double>? parse(String? body) {
@@ -453,8 +421,7 @@ class WaveformCache {
 typedef Beat = ({double ms, double intensity});
 
 class BeatDetector {
-  BeatDetector(this.samples, this.durationMs)
-    : beats = detect(samples, durationMs);
+  BeatDetector(this.samples, this.durationMs) : beats = detect(samples, durationMs);
 
   final List<double> samples;
   final int durationMs;
@@ -494,9 +461,7 @@ class BeatDetector {
     for (var i = 2; i < n - 1; i++) {
       final a = math.max(0, i - w), b = math.min(n, i + w + 1);
       final mean = (sum[b] - sum[a]) / (b - a);
-      final sd = math.sqrt(
-        math.max(0, (sq[b] - sq[a]) / (b - a) - mean * mean),
-      );
+      final sd = math.sqrt(math.max(0, (sq[b] - sq[a]) / (b - a) - mean * mean));
       final thr = math.max(minRise, mean + 0.4 * sd);
       final t = i * msPer;
       final o = rise[i];
@@ -514,9 +479,7 @@ class BeatDetector {
       for (var i = 1; i < found.length; i++)
         if (found[i].ms - found[i - 1].ms < 900) found[i].ms - found[i - 1].ms,
     ]..sort();
-    final step = gaps.length >= 8
-        ? gaps[gaps.length ~/ 2].clamp(400.0, 700.0)
-        : 500.0;
+    final step = gaps.length >= 8 ? gaps[gaps.length ~/ 2].clamp(400.0, 700.0) : 500.0;
     final level = <double>[0];
     for (final v in s) {
       level.add(level.last + v);
@@ -526,11 +489,7 @@ class BeatDetector {
     final marks = [double.negativeInfinity, for (final b in found) b.ms];
     for (var m = 0; m < marks.length; m++) {
       final end = m + 1 < marks.length ? marks[m + 1] : durationMs.toDouble();
-      for (
-        var t = math.max(marks[m] + step, 0.0);
-        t < end - step * 0.6;
-        t += step
-      ) {
+      for (var t = math.max(marks[m] + step, 0.0); t < end - step * 0.6; t += step) {
         final i = math.min(n - 1, t ~/ msPer);
         final a = math.max(0, i - l), b = math.min(n, i + l + 1);
         if ((level[b] - level[a]) / (b - a) < loud) continue;
@@ -547,8 +506,7 @@ class BeatDetector {
       final b = all[i];
       if (b.intensity == fillIntensity) {
         final next = i + 1 < all.length ? all[i + 1].ms : double.infinity;
-        if ((out.isNotEmpty && b.ms - out.last.ms < minGapMs) ||
-            next - b.ms < minGapMs) {
+        if ((out.isNotEmpty && b.ms - out.last.ms < minGapMs) || next - b.ms < minGapMs) {
           continue;
         }
       }
@@ -803,9 +761,7 @@ class CoverScene {
     ).resolve(ImageConfiguration.empty);
     _listener = ImageStreamListener(
       (info, _) async {
-        final data = await info.image.toByteData(
-          format: ui.ImageByteFormat.rawRgba,
-        );
+        final data = await info.image.toByteData(format: ui.ImageByteFormat.rawRgba);
         final w = info.image.width, h = info.image.height;
         info.dispose();
         if (_disposed || _artUrl != url || data == null) return;
@@ -849,8 +805,7 @@ class CoverSceneHost extends StatefulWidget {
   State<CoverSceneHost> createState() => _CoverSceneHostState();
 }
 
-class _CoverSceneHostState extends State<CoverSceneHost>
-    with SingleTickerProviderStateMixin {
+class _CoverSceneHostState extends State<CoverSceneHost> with SingleTickerProviderStateMixin {
   late final Ticker _ticker = createTicker(_tick);
   final _env = PulseEnvelope();
   AppServices? _app;
@@ -980,8 +935,7 @@ class _CoverSceneHostState extends State<CoverSceneHost>
   }
 
   @override
-  Widget build(BuildContext context) =>
-      CoverSceneScope(scene: widget.scene, child: widget.child);
+  Widget build(BuildContext context) => CoverSceneScope(scene: widget.scene, child: widget.child);
 }
 
 class CoverSceneScope extends InheritedWidget {
@@ -1012,8 +966,9 @@ class CoverBackground extends StatelessWidget {
   // Focus mode progress, 0..1: the blurred spot zooms by FocusGeo.zoom.
   final Animation<double>? focus;
 
-  // Focus backdrop progress, 0..1 over 400 ms: the square spot dissolves and
-  // the palette glow takes the whole window.
+  // Focus enter/exit, 0..1 over 400 ms: the main wash fades to a static dark
+  // base. While Focus is open the wash is not built, so a track change cannot
+  // recolour or animate it.
   final Animation<double>? glow;
 
   static const coverShare = 0.70;
@@ -1023,22 +978,13 @@ class CoverBackground extends StatelessWidget {
   static List<double> tone(bool night) {
     final k = night ? nightGain : lightGain;
     final o = night ? 0.0 : 255 * (1 - k);
-    return <double>[
-      k, 0, 0, 0, o,
-      0, k, 0, 0, o,
-      0, 0, k, 0, o,
-      0, 0, 0, 1, 0,
-    ];
+    return <double>[k, 0, 0, 0, o, 0, k, 0, 0, o, 0, 0, k, 0, o, 0, 0, 0, 1, 0];
   }
 
   static Rect coverRect(Size size) {
     final top = Dp.topBar, h = size.height - Dp.topBar - Dp.contentBottom;
     final side = math.min(h * coverShare, size.width * 0.9);
-    return Rect.fromCenter(
-      center: Offset(size.width / 2, top + h / 2),
-      width: side,
-      height: side,
-    );
+    return Rect.fromCenter(center: Offset(size.width / 2, top + h / 2), width: side, height: side);
   }
 
   static final _zoom = Tween<double>(begin: 1, end: 1 + FocusGeo.zoom);
@@ -1052,41 +998,32 @@ class CoverBackground extends StatelessWidget {
     final f = focus ?? kAlwaysDismissedAnimation;
     final g = glow ?? kAlwaysDismissedAnimation;
     return ListenableBuilder(
-      listenable: Listenable.merge([app.tint, app.focus, s.art]),
+      // Once Focus is open, ignore art so a track change cannot rebuild the wash.
+      listenable: Listenable.merge([app.tint, app.focus, g, if (!app.focus.isOn) s.art]),
       builder: (context, _) {
-        final art = app.tint.value || app.focus.isOn ? s.art.value : null;
-        final d = art?.dominant;
-        final Widget base;
-        if (art == null) {
-          base = _crossfade(
-            SmokeBackground(
-              key: const ValueKey('smoke'),
-              active: app.window.active,
-            ),
-          );
-        } else {
-          final tint = d == null
-              ? c.washBase
-              : CoverColor.windowTint(d, night: c.isNight);
-          base = _crossfade(
+        Widget wash() {
+          // The fading wash on the way into Focus is a snapshot; do not tint
+          // it from a new track while g > 0.
+          final art = app.tint.value ? s.art.value : null;
+          final d = art?.dominant;
+          if (art == null) {
+            return _crossfade(
+              SmokeBackground(key: const ValueKey('smoke'), active: app.window.active),
+            );
+          }
+          final tint = d == null ? c.washBase : CoverColor.windowTint(d, night: c.isNight);
+          return _crossfade(
             Stack(
               key: const ValueKey('cover'),
               fit: StackFit.expand,
               children: [
-                TweenAnimationBuilder<Color?>(
-                  tween: ColorTween(end: tint),
-                  // Covered by the backdrop in Focus, so it jumps there instead
-                  // of repainting the full-window wash for 600 ms.
-                  duration: app.focus.isOn
-                      ? Duration.zero
-                      : const Duration(milliseconds: 600),
-                  builder: (context, color, _) => RepaintBoundary(
+                // Two ready layers cross-fade on a new tint; the wash itself
+                // is painted once per colour, never per frame.
+                _crossfade(
+                  RepaintBoundary(
+                    key: ValueKey('wash|${tint.toARGB32()}|${c.washBase.toARGB32()}'),
                     child: CustomPaint(
-                      painter: WashPainter(
-                        tint: color ?? tint,
-                        base: c.washBase,
-                        dot: c.washDot,
-                      ),
+                      painter: WashPainter(tint: tint, base: c.washBase, dot: c.washDot),
                       child: const SizedBox.expand(),
                     ),
                   ),
@@ -1096,25 +1033,13 @@ class CoverBackground extends StatelessWidget {
                     children: [
                       Positioned.fromRect(
                         rect: coverRect(box.biggest),
-                        child: FadeTransition(
-                          opacity: ReverseAnimation(g),
-                          child: ScaleTransition(
-                            scale: f.drive(_zoom),
-                            child: RepaintBoundary(
-                              child: ColorFiltered(
-                                colorFilter: ColorFilter.matrix(tone(c.isNight)),
-                                child: ValueListenableBuilder<CoverArt?>(
-                                  valueListenable: s.art,
-                                  builder: (context, a, _) => _crossfade(
-                                    a == null
-                                        ? const SizedBox.expand()
-                                        : _Spot(
-                                            key: ValueKey(a.url),
-                                            art: a,
-                                            pulse: s.pulse,
-                                          ),
-                                  ),
-                                ),
+                        child: ScaleTransition(
+                          scale: f.drive(_zoom),
+                          child: RepaintBoundary(
+                            child: ColorFiltered(
+                              colorFilter: ColorFilter.matrix(tone(c.isNight)),
+                              child: _crossfade(
+                                _Spot(key: ValueKey(art.url), art: art, pulse: s.pulse),
                               ),
                             ),
                           ),
@@ -1127,16 +1052,16 @@ class CoverBackground extends StatelessWidget {
             ),
           );
         }
+
         return Stack(
           fit: StackFit.expand,
           children: [
-            base,
-            AnimatedBuilder(
-              animation: g,
-              builder: (context, child) =>
-                  g.value <= 0 ? const SizedBox.shrink() : child!,
-              child: FocusBackdrop(art: s.art.value, visible: g, pulse: s.pulse),
-            ),
+            const ColoredBox(key: ValueKey('focus-base'), color: AgColors.nightWash),
+            if (g.value < 1)
+              FadeTransition(
+                opacity: ReverseAnimation(g),
+                child: TickerMode(enabled: g.value == 0, child: wash()),
+              ),
           ],
         );
       },
@@ -1181,8 +1106,7 @@ class WashPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(WashPainter old) =>
-      old.tint != tint || old.base != base || old.dot != dot;
+  bool shouldRepaint(WashPainter old) => old.tint != tint || old.base != base || old.dot != dot;
 }
 
 class _Spot extends StatelessWidget {
@@ -1193,11 +1117,8 @@ class _Spot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget img(ui.Image i) => RawImage(
-      image: i,
-      fit: BoxFit.fill,
-      filterQuality: FilterQuality.medium,
-    );
+    Widget img(ui.Image i) =>
+        RawImage(image: i, fit: BoxFit.fill, filterQuality: FilterQuality.medium);
     return ValueListenableBuilder<PulseFrame>(
       valueListenable: pulse,
       builder: (context, f, _) => Transform.scale(

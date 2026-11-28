@@ -32,22 +32,24 @@ class PanelGeo {
   double get _closedInner => math.min(maxColumn, w - 2 * Dp.hPad);
   double get _openInner => w * Dp.listOpenFrac;
 
-  double get columnInner =>
-      wide ? _lerp(_closedInner, _openInner, t) : _closedInner;
-
-  double get columnLeft => wide
-      ? _lerp((w - _closedInner) / 2, Dp.panelPad, t)
-      : (w - _closedInner) / 2;
-
   double get panelWidth => wide
       ? w - Dp.panelPad - (Dp.panelPad + _openInner + Dp.panelGutter)
       : Dp.panelNarrowW;
 
-  double get _panelFinalLeft => wide
+  double get panelOpenLeft => wide
       ? Dp.panelPad + _openInner + Dp.panelGutter
       : w - 16 - Dp.panelNarrowW;
 
-  double get panelLeft => _lerp(w + 8, _panelFinalLeft, t);
+  double get panelLeft => _lerp(w + 8, panelOpenLeft, t);
+
+  // The list keeps one width for the whole slide (the open width whenever the
+  // panel is on screen) and only moves, so it never relayouts per frame.
+  double listInner({required bool open}) => wide && open ? _openInner : _closedInner;
+
+  double listRestLeft(double inner) => (w - inner) / 2;
+
+  double listLeft(double inner) =>
+      wide ? _lerp(listRestLeft(inner), Dp.panelPad, t) : listRestLeft(inner);
 
   static double _lerp(double a, double b, double t) => a + (b - a) * t;
 }
@@ -76,6 +78,11 @@ class TrackPanelView extends StatefulWidget {
 class _TrackPanelViewState extends State<TrackPanelView> {
   final _focus = FocusNode(debugLabel: 'track panel');
   TrackPanel? _panel;
+  Animation<double>? _slide;
+
+  // The tab lists and the overlay blur come in once the slide has finished,
+  // so the slide itself only moves an already painted card.
+  bool _ready = false;
 
   @override
   void didChangeDependencies() {
@@ -85,6 +92,19 @@ class _TrackPanelViewState extends State<TrackPanelView> {
       _panel?.focusRequests.removeListener(_takeFocus);
       _panel = p..focusRequests.addListener(_takeFocus);
     }
+    final a = PanelScope.of(context);
+    if (a != _slide) {
+      _slide?.removeStatusListener(_onSlide);
+      _slide = a?..addStatusListener(_onSlide);
+      if (_slideDone(a?.status)) _ready = true;
+    }
+  }
+
+  bool _slideDone(AnimationStatus? status) =>
+      _slide == null || _slide!.value >= 1 || status == AnimationStatus.completed;
+
+  void _onSlide(AnimationStatus status) {
+    if (!_ready && _slideDone(status) && mounted) setState(() => _ready = true);
   }
 
   void _takeFocus() {
@@ -94,6 +114,7 @@ class _TrackPanelViewState extends State<TrackPanelView> {
   @override
   void dispose() {
     _panel?.focusRequests.removeListener(_takeFocus);
+    _slide?.removeStatusListener(_onSlide);
     _focus.dispose();
     super.dispose();
   }
@@ -132,11 +153,13 @@ class _TrackPanelViewState extends State<TrackPanelView> {
                         ),
                         const SizedBox(height: 10),
                         Expanded(
-                          child: switch (app.panel.tab) {
-                            PanelTab.queue => const _QueueTab(),
-                            PanelTab.related => const _RelatedTab(),
-                            PanelTab.comments => const _CommentsTab(),
-                          },
+                          child: !_ready
+                              ? const SizedBox.shrink(key: ValueKey('panel-list-pending'))
+                              : switch (app.panel.tab) {
+                                  PanelTab.queue => const _QueueTab(),
+                                  PanelTab.related => const _RelatedTab(),
+                                  PanelTab.comments => const _CommentsTab(),
+                                },
                         ),
                       ],
                     ),
@@ -155,10 +178,13 @@ class _TrackPanelViewState extends State<TrackPanelView> {
     return Focus(
       focusNode: _focus,
       // As an overlay the panel floats over the list, so blur what is behind it.
+      // The blur is switched on only once the panel rests: blurring a moving
+      // backdrop would redo the blur every frame of the slide.
       child: narrow
           ? ClipRRect(
               borderRadius: BorderRadius.circular(Dp.rPanelSide),
               child: BackdropFilter(
+                enabled: _ready,
                 filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                 child: body,
               ),
